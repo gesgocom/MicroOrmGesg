@@ -4,6 +4,19 @@
         <TargetFramework>net9.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+
+        <PackageId>Gesgocom.MicroOrmGesg</PackageId>
+        <Version>1.0.0</Version>
+        <Authors>Jorge Jerez Sabater</Authors>
+        <Description>Librería MicroORM para el acceso a datos con Postgres.</Description>
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     </PropertyGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Dapper" Version="2.1.66" />
+      <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+      <PackageReference Include="Npgsql" Version="9.0.3" />
+      <PackageReference Include="Npgsql.NodaTime" Version="9.0.3" />
+    </ItemGroup>
 
 </Project>
