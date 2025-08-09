@@ -1,4 +1,4 @@
-# Configuración de MicroOrmGesg
+# Configuración de MicroOrmGesg 1.0
 
 ```
 dotnet build --configuration Release
