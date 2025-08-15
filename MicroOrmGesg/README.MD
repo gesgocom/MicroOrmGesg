@@ -402,3 +402,128 @@ var deleted = await repo.DeleteAsync(db, id!);
 - [ ] Mis modelos usan `[Table]`, `[Key]`, `[Column]` donde corresponde.
 - [ ] Para `jsonb`, uso `[Jsonb]` y tipos `JObject/JArray/JToken` o `string` según convenga.
 - [ ] Commit/Rollback con `db.BeginTransactionAsync()` en mis controladores/servicios.
+
+
+# MicroOrmGesg 1.1 — Documentación actualizada
+
+Esta versión amplía las capacidades de **GetAllAsync** para permitir filtros dinámicos por campo y valor, con soporte para diferentes tipos de datos y modos de búsqueda en campos string.
+
+---
+
+## 🚀 Cambios principales respecto a 1.0
+
+- **Nuevo filtrado dinámico en `GetAllAsync`**:
+  - Parámetros opcionales `filterField` y `filterValue`.
+  - Detección de tipo del valor para construir el filtro adecuado (`=`, `ILIKE`, etc.).
+  - Enum `StringFilterMode` para cadenas:
+    - `Equals` (igualdad exacta, por defecto).
+    - `Contains` (contiene, `ILIKE '%valor%'`).
+    - `StartsWith` (comienza con, `ILIKE 'valor%'`).
+    - `EndsWith` (termina con, `ILIKE '%valor'`).
+  - Protección contra inyecciones con *whitelist* de columnas (solo propiedades válidas o marcadas con `[Column]`).
+
+---
+
+## 📦 Firma del método actualizada
+
+```csharp
+Task<List<T>> GetAllAsync(
+    IDbSession session,
+    bool includeSoftDeleted = false,
+    string? orderBy = null,
+    SortDirection dir = SortDirection.Asc,
+    int? limit = null,
+    int? offset = null,
+    string? filterField = null,
+    object? filterValue = null,
+    StringFilterMode stringMode = StringFilterMode.Equals
+);
+```
+
+---
+
+## 📋 Ejemplos de uso
+
+**1. Filtrado exacto por campo string:**
+```csharp
+var usuarios = await repo.GetAllAsync(db,
+    filterField: "Usuario",
+    filterValue: "alice");
+```
+
+**2. Filtrado por texto (contiene, case-insensitive):**
+```csharp
+var usuarios = await repo.GetAllAsync(db,
+    filterField: "nombre",
+    filterValue: "carla",
+    stringMode: StringFilterMode.Contains);
+```
+
+**3. Filtrado por campo con `[Column]`:**
+```csharp
+var usuarios = await repo.GetAllAsync(db,
+    filterField: "password_hash",
+    filterValue: "xyz");
+```
+
+**4. Combinado con orden y paginación:**
+```csharp
+var usuarios = await repo.GetAllAsync(db,
+    includeSoftDeleted: false,
+    orderBy: "nombre",
+    dir: SortDirection.Desc,
+    limit: 20,
+    offset: 0,
+    filterField: "activo",
+    filterValue: true);
+```
+
+---
+
+## ⚙️ Implementación de seguridad para filtros
+
+El método `ResolveColumn` asegura que solo se pueda filtrar por columnas conocidas en el modelo:
+
+```csharp
+private static string? ResolveColumn(EntityMap map, string field)
+{
+    var f = field.Trim();
+
+    // 1) Propiedad C#
+    var byProp = map.Props.FirstOrDefault(p =>
+        string.Equals(p.Name, f, StringComparison.OrdinalIgnoreCase));
+    if (byProp != null)
+        return byProp.GetCustomAttribute<ColumnAttribute>()?.Name ?? Naming.ToSnake(byProp.Name);
+
+    // 2) snake_case
+    var bySnake = map.Props.FirstOrDefault(p =>
+        string.Equals(Naming.ToSnake(p.Name), f, StringComparison.OrdinalIgnoreCase));
+    if (bySnake != null)
+        return bySnake.GetCustomAttribute<ColumnAttribute>()?.Name ?? Naming.ToSnake(bySnake.Name);
+
+    // 3) Nombre exacto en [Column]
+    var byColumnAttr = map.Props.FirstOrDefault(p =>
+        string.Equals(p.GetCustomAttribute<ColumnAttribute>()?.Name, f, StringComparison.OrdinalIgnoreCase));
+    return byColumnAttr?.GetCustomAttribute<ColumnAttribute>()?.Name;
+}
+```
+
+---
+
+## 📌 Notas y buenas prácticas
+
+- Si el tipo de `filterValue` es `string`, el modo de comparación se controla con `stringMode`.
+- Si es `int`, `bool`, `DateTime`, etc., siempre se usará `=`.
+- La *whitelist* evita inyecciones SQL verificando el campo contra la definición del modelo.
+- Compatible con el resto de características de `GetAllAsync`: soft delete, ordenación y paginación.
+
+---
+
+## ✅ Checklist rápido (añadido para 1.1)
+
+- [ ] Usar siempre `filterField` con nombres de propiedad o `[Column]` válidos.
+- [ ] Definir `[Column]` en propiedades que no coincidan con el nombre real de la columna.
+- [ ] Probar filtros con todos los `StringFilterMode`.
+- [ ] Combinar filtros con `orderBy`, `limit` y `offset` para optimizar consultas grandes.
+
+
