@@ -213,8 +213,8 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
         return affected > 0;
     }
 
-    private static DynamicParameters BuildWriteParameters<TModel>(EntityMap map, TModel data,
-        bool includeKeyParam = false)
+    private static DynamicParameters BuildWriteParameters<TModel>(
+        EntityMap map, TModel data, bool includeKeyParam = false)
     {
         var dp = new DynamicParameters();
 
@@ -223,26 +223,22 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
             var paramName = p.Name;
             var value = p.GetValue(data);
 
-            bool isJsonLike =
-                p.GetCustomAttribute<JsonbAttribute>() != null ||
-                value is JObject ||
-                value is JArray ||
-                value is JToken;
+            bool isNewtonsoftJson = value is JObject || value is JArray || value is JToken;
+            bool hasJsonbAttr     = p.GetCustomAttribute<JsonbAttribute>() != null;
 
-            if (isJsonLike)
+            if (isNewtonsoftJson)
             {
-                // Serializar con Newtonsoft
-                var jsonString = value != null ? JsonConvert.SerializeObject(value) : null;
-
-                var np = new NpgsqlParameter(paramName, NpgsqlDbType.Jsonb)
-                {
-                    Value = (object?)jsonString ?? DBNull.Value
-                };
-
-                dp.Add(paramName, np);
+                // ✅ Ya es JSON de Newtonsoft: pásalo tal cual
+                dp.Add(paramName, value);
+            }
+            else if (hasJsonbAttr && value is not null)
+            {
+                // ✅ Forzamos JSONB creando un JToken para que dispare el TypeHandler
+                dp.Add(paramName, JToken.FromObject(value));
             }
             else
             {
+                // ✅ Tipo normal (string/int/bool/etc.)
                 dp.Add(paramName, value);
             }
         }
