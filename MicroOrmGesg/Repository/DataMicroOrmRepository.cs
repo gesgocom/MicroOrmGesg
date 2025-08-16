@@ -3,10 +3,7 @@ using System.Data;
 using System.Reflection;
 using Dapper;
 using MicroOrmGesg.Utils;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using Npgsql;
-using NpgsqlTypes;
 
 namespace MicroOrmGesg.Repository;
 
@@ -24,7 +21,8 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
 
     public async Task<List<T>> GetAllAsync(IDbSession session, bool includeSoftDeleted = false, string? orderBy = null,
         SortDirection dir = SortDirection.Asc, int? limit = null, int? offset = null, string? filterField = null,
-        object? filterValue = null, StringFilterMode stringMode = StringFilterMode.Equals)
+        object? filterValue = null, StringFilterMode stringMode = StringFilterMode.Equals,
+        bool forceLowerCase = false)
     {
         if (session.Connection is null)
             throw new InvalidOperationException("La sesión está cerrada. Llama a OpenAsync() primero.");
@@ -48,44 +46,56 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
             if (resolved is not null)
             {
                 var colSql = Naming.Quote(resolved);
+
+                // Si el filtro es string aplicamos la lógica de lower/like
                 if (filterValue is string s)
                 {
+                    parameters.Add("filter", s);
+
+                    // Si forceLowerCase ⇒ usamos lower(col) y lower(@filter)
+                    var colExpr = forceLowerCase ? $"lower({colSql})" : colSql;
+                    var valExpr = forceLowerCase ? "lower(@filter)" : "@filter";
+
+                    // Si forceLowerCase ⇒ usamos LIKE (ya no hace falta ILIKE)
+                    // Si no ⇒ mantenemos ILIKE para ser case-insensitive por defecto en modos textuales
+                    string likeKeyword = forceLowerCase ? "LIKE" : "ILIKE";
+
                     switch (stringMode)
                     {
                         case StringFilterMode.Contains:
-                            parameters.Add("filter", s);
-                            whereParts.Add($"{colSql} ILIKE '%' || @filter || '%'");
+                            whereParts.Add($"{colExpr} {likeKeyword} '%' || {valExpr} || '%'");
                             break;
+
                         case StringFilterMode.StartsWith:
-                            parameters.Add("filter", s);
-                            whereParts.Add($"{colSql} ILIKE @filter || '%'");
+                            whereParts.Add($"{colExpr} {likeKeyword} {valExpr} || '%'");
                             break;
+
                         case StringFilterMode.EndsWith:
-                            parameters.Add("filter", s);
-                            whereParts.Add($"{colSql} ILIKE '%' || @filter");
+                            whereParts.Add($"{colExpr} {likeKeyword} '%' || {valExpr}");
                             break;
+
                         default: // Equals
-                            parameters.Add("filter", s);
-                            whereParts.Add($"{colSql} = @filter");
+                            whereParts.Add($"{colExpr} = {valExpr}");
                             break;
                     }
                 }
                 else
                 {
+                    // No-string ⇒ comparación directa
                     parameters.Add("filter", filterValue);
                     whereParts.Add($"{colSql} = @filter");
                 }
             }
-            // si no se resuelve el campo, simplemente no añadimos filtro (whitelist contra inyección)
+            // Si no se resuelve el campo, no aplicamos filtro (whitelist anti-inyección)
         }
 
-        // Componer WHERE final
+        // WHERE final
         string where = whereParts.Count > 0 ? " where " + string.Join(" and ", whereParts) : string.Empty;
 
         // ORDER BY
         string order = BuildOrderClause(map, orderBy, dir);
 
-        // LIMIT/OFFSET
+        // LIMIT / OFFSET
         string paging = string.Empty;
         if (limit is { } l && l > 0)
         {
@@ -224,7 +234,7 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
             var value = p.GetValue(data);
 
             bool isNewtonsoftJson = value is JObject || value is JArray || value is JToken;
-            bool hasJsonbAttr     = p.GetCustomAttribute<JsonbAttribute>() != null;
+            bool hasJsonbAttr = p.GetCustomAttribute<JsonbAttribute>() != null;
 
             if (isNewtonsoftJson)
             {

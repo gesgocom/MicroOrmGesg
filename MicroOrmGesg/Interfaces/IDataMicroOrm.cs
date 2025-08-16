@@ -15,7 +15,8 @@ public interface IDataMicroOrm<T> where T:class
         int? offset = null,
         string? filterField = null,
         object? filterValue = null,
-        StringFilterMode stringMode = StringFilterMode.Equals);
+        StringFilterMode stringMode = StringFilterMode.Equals,
+        bool forceLowerCase = false);
     Task<int> InsertAsync(IDbSession session, T data);
     Task<object?> InsertAsyncReturnId(IDbSession session, T data);
     Task<bool> UpdateAsync(IDbSession session, T data);
