@@ -33,3 +33,44 @@ public sealed class ColumnAttribute : Attribute
 }
 [AttributeUsage(AttributeTargets.Property)]
 public sealed class JsonbAttribute : Attribute { }
+
+// === Validación ===
+/// <summary>
+/// Indica que la propiedad es obligatoria. Para cadenas, no permite null ni cadenas vacías (o solo espacios).
+/// </summary>
+[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
+public sealed class RequiredAttribute : Attribute
+{
+    /// <summary>
+    /// Mensaje de error personalizado. Si no se especifica, se generará uno por defecto.
+    /// </summary>
+    public string? Message { get; init; }
+}
+
+/// <summary>
+/// Valida la longitud de una cadena. Si Min o Max son 0, ese límite se ignora.
+/// </summary>
+[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
+public sealed class StringLengthAttribute : Attribute
+{
+    public StringLengthAttribute(int min = 0, int max = 0)
+    {
+        Min = min;
+        Max = max;
+    }
+
+    /// <summary>
+    /// Límite mínimo de longitud. 0 = sin mínimo.
+    /// </summary>
+    public int Min { get; }
+
+    /// <summary>
+    /// Límite máximo de longitud. 0 = sin máximo.
+    /// </summary>
+    public int Max { get; }
+
+    /// <summary>
+    /// Mensaje de error personalizado. Si no se especifica, se generará uno por defecto.
+    /// </summary>
+    public string? Message { get; init; }
+}
