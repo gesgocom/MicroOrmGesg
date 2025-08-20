@@ -4,7 +4,9 @@ using System.Reflection;
 using System.Threading;
 using Dapper;
 using MicroOrmGesg.Utils;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Npgsql;
 
 namespace MicroOrmGesg.Repository;
 
@@ -181,22 +183,23 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
             var paramName = p.Name;
             var value = p.GetValue(data);
 
-            bool isNewtonsoftJson = value is JObject || value is JArray || value is JToken;
             bool hasJsonbAttr = p.GetCustomAttribute<JsonbAttribute>() != null;
+            // Detectar por tipo de propiedad (aunque el valor sea null)
+            var t = p.PropertyType;
+            bool isJsonType = typeof(JToken).IsAssignableFrom(t) || typeof(JObject).IsAssignableFrom(t) || typeof(JArray).IsAssignableFrom(t);
+            // Detección adicional por instancia (por si llega un tipo dinámico similar a JToken)
+            bool isJsonInstance = value is JToken || value is JObject || value is JArray;
+            bool isJsonLike = hasJsonbAttr || isJsonType || isJsonInstance;
 
-            if (isNewtonsoftJson)
+            if (isJsonLike)
             {
-                // ✅ Ya es JSON de Newtonsoft: pásalo tal cual
-                dp.Add(paramName, value);
-            }
-            else if (hasJsonbAttr && value is not null)
-            {
-                // ✅ Forzamos JSONB creando un JToken para que dispare el TypeHandler
-                dp.Add(paramName, JToken.FromObject(value));
+                var jsonString = value != null ? JsonConvert.SerializeObject(value) : null;
+                // Usar ICustomQueryParameter para que Dapper añada un NpgsqlParameter con Jsonb explícito
+                dp.Add(paramName, new NpgsqlJsonbParameter(jsonString));
             }
             else
             {
-                // ✅ Tipo normal (string/int/bool/etc.)
+                // Tipo normal (string/int/bool/etc.)
                 dp.Add(paramName, value);
             }
         }
@@ -395,5 +398,20 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
             PageNumber = page,
             Size = size
         };
+    }
+
+    // Parameter wrapper to force jsonb explicitly when writing (INSERT/UPDATE) with Dapper
+    private sealed class NpgsqlJsonbParameter : SqlMapper.ICustomQueryParameter
+    {
+        private readonly object? _value;
+        public NpgsqlJsonbParameter(object? value) => _value = value ?? DBNull.Value;
+        public void AddParameter(IDbCommand command, string name)
+        {
+            var p = new NpgsqlParameter(name, NpgsqlTypes.NpgsqlDbType.Jsonb)
+            {
+                Value = _value ?? DBNull.Value
+            };
+            command.Parameters.Add(p);
+        }
     }
 }

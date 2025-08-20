@@ -26,6 +26,28 @@ public async Task<IActionResult> Get(int id, CancellationToken ct)
 
 ---
 
+# Cambios: JSONB explícito en escritura (1.3)
+
+A partir de la versión 1.3:
+
+3) JSONB explícito en escritura
+- Para propiedades marcadas con `[Jsonb]` o de tipo `JToken`/`JObject`/`JArray`, se usa `NpgsqlParameter` con `NpgsqlDbType.Jsonb` en operaciones de escritura (INSERT/UPDATE) para no depender de conversiones implícitas de proveedor.
+- Se mantienen los TypeHandlers (Newtonsoft + Dapper) para lectura y compatibilidad hacia atrás, de modo que los `SELECT` sigan deserializando automáticamente a `JObject`/`JArray`/`JToken`.
+
+Ejemplo (resumen) del manejo de parámetros en escritura:
+```csharp
+var jsonString = value != null ? JsonConvert.SerializeObject(value) : null;
+var np = new NpgsqlParameter(paramName, NpgsqlDbType.Jsonb)
+{
+    Value = (object?)jsonString ?? DBNull.Value
+};
+dp.Add(paramName, np);
+```
+
+Nota: Si ya registraste los `TypeHandler` de `JObject`/`JArray`/`JToken`, no necesitas cambios para lectura; esta versión únicamente hace explícito el tipo `jsonb` en escritura para mayor robustez.
+
+---
+
 
 # DbSession — Gestión de Conexiones y Transacciones en PostgreSQL
 
