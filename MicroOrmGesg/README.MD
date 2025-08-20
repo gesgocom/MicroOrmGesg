@@ -4,6 +4,28 @@
 dotnet build --configuration Release
 ```
 
+---
+
+# Cambios: CancellationToken en API pública (1.2)
+
+A partir de la versión 1.2:
+- Todas las APIs públicas del repositorio (`GetByIdAsync`, `GetAllAsync`, `InsertAsync`, `InsertAsyncReturnId`, `UpdateAsync`, `DeleteAsync`) aceptan `CancellationToken ct = default`.
+- Se propaga el `ct` a `DbSession.OpenAsync`, `BeginTransactionAsync`, y a las operaciones Dapper usando `CommandDefinition` (para cancelación cooperativa).
+- Esto mejora la cooperación con ASP.NET Core (`HttpContext.RequestAborted`) y evita trabajo innecesario ante cancelaciones.
+
+Ejemplo en controlador ASP.NET Core:
+```csharp
+[HttpGet("{id:int}")]
+public async Task<IActionResult> Get(int id, CancellationToken ct)
+{
+    await _db.OpenAsync(ct);
+    var entity = await _repo.GetByIdAsync(_db, id, ct);
+    return entity is null ? NotFound() : Ok(entity);
+}
+```
+
+---
+
 
 # DbSession — Gestión de Conexiones y Transacciones en PostgreSQL
 
@@ -157,20 +179,47 @@ SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JTokenTypeHandler());
 ## 🧩 Interfaz del repositorio
 
 ```csharp
-Task<T?> GetByIdAsync(IDbSession session, object id);
+Task<T?> GetByIdAsync(IDbSession session, object id, CancellationToken ct = default);
 
-Task<List<T>?> GetAllAsync(
+Task<List<T>> GetAllAsync(
     IDbSession session,
     bool includeSoftDeleted = false,
     string? orderBy = null,
     SortDirection dir = SortDirection.Asc,
     int? limit = null,
-    int? offset = null);
+    int? offset = null,
+    string? filterField = null,
+    object? filterValue = null,
+    StringFilterMode stringMode = StringFilterMode.Equals,
+    bool forceLowerCase = false,
+    CancellationToken ct = default);
 
-Task<int> InsertAsync(IDbSession session, T data);
-Task<object?> InsertAsyncReturnId(IDbSession session, T data);
-Task<bool> UpdateAsync(IDbSession session, T data);
-Task<bool> DeleteAsync(IDbSession session, object id);
+Task<int> CountAsync(
+    IDbSession session,
+    bool includeSoftDeleted = false,
+    string? filterField = null,
+    object? filterValue = null,
+    StringFilterMode stringMode = StringFilterMode.Equals,
+    bool forceLowerCase = false,
+    CancellationToken ct = default);
+
+Task<Page<T>> PageAsync(
+    IDbSession session,
+    int page,
+    int size,
+    bool includeSoftDeleted = false,
+    string? orderBy = null,
+    SortDirection dir = SortDirection.Asc,
+    string? filterField = null,
+    object? filterValue = null,
+    StringFilterMode stringMode = StringFilterMode.Equals,
+    bool forceLowerCase = false,
+    CancellationToken ct = default);
+
+Task<int> InsertAsync(IDbSession session, T data, CancellationToken ct = default);
+Task<object?> InsertAsyncReturnId(IDbSession session, T data, CancellationToken ct = default);
+Task<bool> UpdateAsync(IDbSession session, T data, CancellationToken ct = default);
+Task<bool> DeleteAsync(IDbSession session, object id, CancellationToken ct = default);
 ```
 
 ### Comportamiento de cada método
@@ -359,13 +408,47 @@ public class PreferenciasDto { public string Tema { get; set; } = "light"; }
 
 ## 🔎 Ejemplos de uso
 
+### Paginación con total (PageAsync) y conteo (CountAsync)
+
+- Ambos métodos reutilizan la misma lógica de filtros/WHERE que `GetAllAsync` (soft delete, filtros por `filterField`/`filterValue`, `StringFilterMode`, `forceLowerCase`).
+- `PageAsync` devuelve un objeto con `{ Items, Total, Page, Size }`.
+
+```csharp
+// Total con los mismos filtros
+var total = await repo.CountAsync(db,
+    includeSoftDeleted: false,
+    filterField: "Nombre",
+    filterValue: "ali",
+    stringMode: StringFilterMode.Contains,
+    forceLowerCase: true,
+    ct);
+
+// Página 2 de tamaño 10, ordenando por "Usuario" descendente
+var page = await repo.PageAsync(db,
+    page: 2,
+    size: 10,
+    includeSoftDeleted: false,
+    orderBy: "Usuario",
+    dir: SortDirection.Desc,
+    filterField: "Nombre",
+    filterValue: "ali",
+    stringMode: StringFilterMode.Contains,
+    forceLowerCase: true,
+    ct: ct);
+
+// page.Items -> List<T>
+// page.Total -> int (COUNT(*))
+// page.Page  -> número de página (1-based)
+// page.Size  -> tamaño de página
+```
+
 ```csharp
 // GetById
-var usuario = await repo.GetByIdAsync(db, 123);
+var usuario = await repo.GetByIdAsync(db, 123, ct);
 
 // GetAll con orden y paginación
 var page = await repo.GetAllAsync(db, includeSoftDeleted: false, orderBy: "Usuario",
-                                  dir: SortDirection.Desc, limit: 20, offset: 0);
+                                  dir: SortDirection.Desc, limit: 20, offset: 0, ct: ct);
 
 // Insert devolviendo id
 var id = await repo.InsertAsyncReturnId(db, new Usuarios {
@@ -373,15 +456,15 @@ var id = await repo.InsertAsyncReturnId(db, new Usuarios {
     Usuario = "alice",
     PasswordHash = "xxx",
     Preferencias = JObject.FromObject(new { tema = "dark", notificaciones = true })
-});
+}, ct);
 
 // Update
 usuario!.Nombre = "Alice Doe";
 usuario.Preferencias!["tema"] = "light";
-var ok = await repo.UpdateAsync(db, usuario);
+var ok = await repo.UpdateAsync(db, usuario, ct);
 
 // Delete (soft si existe, si no, delete físico)
-var deleted = await repo.DeleteAsync(db, id!);
+var deleted = await repo.DeleteAsync(db, id!, ct);
 ```
 
 ---

@@ -1,11 +1,12 @@
 using System.Data;
+using System.Threading;
 using MicroOrmGesg.Utils;
 
 namespace MicroOrmGesg.Interfaces;
 
 public interface IDataMicroOrm<T> where T:class
 {
-    Task<T?> GetByIdAsync(IDbSession session, object id);
+    Task<T?> GetByIdAsync(IDbSession session, object id, CancellationToken ct = default);
     Task<List<T>> GetAllAsync(
         IDbSession session,
         bool includeSoftDeleted = false,
@@ -16,9 +17,33 @@ public interface IDataMicroOrm<T> where T:class
         string? filterField = null,
         object? filterValue = null,
         StringFilterMode stringMode = StringFilterMode.Equals,
-        bool forceLowerCase = false);
-    Task<int> InsertAsync(IDbSession session, T data);
-    Task<object?> InsertAsyncReturnId(IDbSession session, T data);
-    Task<bool> UpdateAsync(IDbSession session, T data);
-    Task<bool> DeleteAsync(IDbSession session, object id);
+        bool forceLowerCase = false,
+        CancellationToken ct = default);
+
+    Task<int> CountAsync(
+        IDbSession session,
+        bool includeSoftDeleted = false,
+        string? filterField = null,
+        object? filterValue = null,
+        StringFilterMode stringMode = StringFilterMode.Equals,
+        bool forceLowerCase = false,
+        CancellationToken ct = default);
+
+    Task<Page<T>> PageAsync(
+        IDbSession session,
+        int page,
+        int size,
+        bool includeSoftDeleted = false,
+        string? orderBy = null,
+        SortDirection dir = SortDirection.Asc,
+        string? filterField = null,
+        object? filterValue = null,
+        StringFilterMode stringMode = StringFilterMode.Equals,
+        bool forceLowerCase = false,
+        CancellationToken ct = default);
+
+    Task<int> InsertAsync(IDbSession session, T data, CancellationToken ct = default);
+    Task<object?> InsertAsyncReturnId(IDbSession session, T data, CancellationToken ct = default);
+    Task<bool> UpdateAsync(IDbSession session, T data, CancellationToken ct = default);
+    Task<bool> DeleteAsync(IDbSession session, object id, CancellationToken ct = default);
 }

@@ -1,6 +1,7 @@
 using MicroOrmGesg.Interfaces;
 using System.Data;
 using System.Reflection;
+using System.Threading;
 using Dapper;
 using MicroOrmGesg.Utils;
 using Newtonsoft.Json.Linq;
@@ -9,20 +10,21 @@ namespace MicroOrmGesg.Repository;
 
 public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
 {
-    public async Task<T?> GetByIdAsync(IDbSession session, object id)
+    public async Task<T?> GetByIdAsync(IDbSession session, object id, CancellationToken ct = default)
     {
         IDbConnection conn = session.Connection!;
         var map = EntityMap.For(typeof(T));
 
         // WHERE por clave primaria
         var sql = $"select {map.SelectColsCsv} from {map.TableFullQuoted} where {Naming.Quote(map.KeyColumn)} = @id";
-        return await conn.QuerySingleOrDefaultAsync<T>(sql, new { id }, session.Transaction);
+        var cmd = new CommandDefinition(sql, new { id }, session.Transaction, cancellationToken: ct);
+        return await conn.QuerySingleOrDefaultAsync<T>(cmd);
     }
 
     public async Task<List<T>> GetAllAsync(IDbSession session, bool includeSoftDeleted = false, string? orderBy = null,
         SortDirection dir = SortDirection.Asc, int? limit = null, int? offset = null, string? filterField = null,
         object? filterValue = null, StringFilterMode stringMode = StringFilterMode.Equals,
-        bool forceLowerCase = false)
+        bool forceLowerCase = false, CancellationToken ct = default)
     {
         if (session.Connection is null)
             throw new InvalidOperationException("La sesión está cerrada. Llama a OpenAsync() primero.");
@@ -30,67 +32,8 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
         IDbConnection conn = session.Connection!;
         var map = EntityMap.For(typeof(T));
 
-        // WHERE base (soft delete)
-        var whereParts = new List<string>();
-        if (!includeSoftDeleted && map.HasSoftDelete && !string.IsNullOrEmpty(map.SoftDeleteColumn))
-        {
-            whereParts.Add($"{Naming.Quote(map.SoftDeleteColumn)} = false");
-        }
-
-        var parameters = new DynamicParameters();
-
-        // WHERE adicional (campo/valor)
-        if (!string.IsNullOrWhiteSpace(filterField))
-        {
-            var resolved = ResolveColumn(map, filterField);
-            if (resolved is not null)
-            {
-                var colSql = Naming.Quote(resolved);
-
-                // Si el filtro es string aplicamos la lógica de lower/like
-                if (filterValue is string s)
-                {
-                    parameters.Add("filter", s);
-
-                    // Si forceLowerCase ⇒ usamos lower(col) y lower(@filter)
-                    var colExpr = forceLowerCase ? $"lower({colSql})" : colSql;
-                    var valExpr = forceLowerCase ? "lower(@filter)" : "@filter";
-
-                    // Si forceLowerCase ⇒ usamos LIKE (ya no hace falta ILIKE)
-                    // Si no ⇒ mantenemos ILIKE para ser case-insensitive por defecto en modos textuales
-                    string likeKeyword = forceLowerCase ? "LIKE" : "ILIKE";
-
-                    switch (stringMode)
-                    {
-                        case StringFilterMode.Contains:
-                            whereParts.Add($"{colExpr} {likeKeyword} '%' || {valExpr} || '%'");
-                            break;
-
-                        case StringFilterMode.StartsWith:
-                            whereParts.Add($"{colExpr} {likeKeyword} {valExpr} || '%'");
-                            break;
-
-                        case StringFilterMode.EndsWith:
-                            whereParts.Add($"{colExpr} {likeKeyword} '%' || {valExpr}");
-                            break;
-
-                        default: // Equals
-                            whereParts.Add($"{colExpr} = {valExpr}");
-                            break;
-                    }
-                }
-                else
-                {
-                    // No-string ⇒ comparación directa
-                    parameters.Add("filter", filterValue);
-                    whereParts.Add($"{colSql} = @filter");
-                }
-            }
-            // Si no se resuelve el campo, no aplicamos filtro (whitelist anti-inyección)
-        }
-
-        // WHERE final
-        string where = whereParts.Count > 0 ? " where " + string.Join(" and ", whereParts) : string.Empty;
+        // WHERE y parámetros compartidos
+        var (where, parameters) = BuildWhereAndParams(map, includeSoftDeleted, filterField, filterValue, stringMode, forceLowerCase);
 
         // ORDER BY
         string order = BuildOrderClause(map, orderBy, dir);
@@ -112,11 +55,12 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
         // SQL final
         string sql = $"select {map.SelectColsCsv} from {map.TableFullQuoted}{where}{order}{paging}";
 
-        var result = await conn.QueryAsync<T>(sql, parameters, transaction: session.Transaction);
+        var cmd = new CommandDefinition(sql, parameters, session.Transaction, cancellationToken: ct);
+        var result = await conn.QueryAsync<T>(cmd);
         return result.AsList();
     }
 
-    public async Task<int> InsertAsync(IDbSession session, T data)
+    public async Task<int> InsertAsync(IDbSession session, T data, CancellationToken ct = default)
     {
         if (session.Connection is null)
             throw new InvalidOperationException("La sesión está cerrada. Llama a OpenAsync() primero.");
@@ -133,13 +77,14 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
         // ⬇️ parámetros con jsonb cuando aplique
         var dp = BuildWriteParameters(map, data);
 
-        var affected = await conn.ExecuteAsync(sql, dp, session.Transaction);
+        var cmd = new CommandDefinition(sql, dp, session.Transaction, cancellationToken: ct);
+        var affected = await conn.ExecuteAsync(cmd);
         if (affected == 0)
             throw new InvalidOperationException("No se insertó ningún registro. Verifica los datos.");
         return affected;
     }
 
-    public async Task<object?> InsertAsyncReturnId(IDbSession session, T data)
+    public async Task<object?> InsertAsyncReturnId(IDbSession session, T data, CancellationToken ct = default)
     {
         if (session.Connection is null)
             throw new InvalidOperationException("La sesión está cerrada. Llama a OpenAsync() primero.");
@@ -155,13 +100,14 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
         // ⬇️ parámetros con jsonb cuando aplique
         var dp = BuildWriteParameters(map, data);
 
-        var id = await conn.ExecuteScalarAsync<object>(sql, dp, session.Transaction);
+        var cmd = new CommandDefinition(sql, dp, session.Transaction, cancellationToken: ct);
+        var id = await conn.ExecuteScalarAsync<object>(cmd);
         if (id is null)
             throw new InvalidOperationException("No se pudo obtener el ID del registro insertado.");
         return id;
     }
 
-    public async Task<bool> UpdateAsync(IDbSession session, T data)
+    public async Task<bool> UpdateAsync(IDbSession session, T data, CancellationToken ct = default)
     {
         if (session.Connection is null)
             throw new InvalidOperationException("La sesión está cerrada. Llama a OpenAsync() primero.");
@@ -188,11 +134,12 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
 
         var dp = BuildWriteParameters(map, data, includeKeyParam: true);
 
-        var affected = await conn.ExecuteAsync(sql, dp, session.Transaction);
+        var cmd = new CommandDefinition(sql, dp, session.Transaction, cancellationToken: ct);
+        var affected = await conn.ExecuteAsync(cmd);
         return affected > 0;
     }
 
-    public async Task<bool> DeleteAsync(IDbSession session, object id)
+    public async Task<bool> DeleteAsync(IDbSession session, object id, CancellationToken ct = default)
     {
         if (session.Connection is null)
             throw new InvalidOperationException("La sesión está cerrada. Llama a OpenAsync() primero.");
@@ -219,7 +166,8 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
             parameters = new { id };
         }
 
-        var affected = await conn.ExecuteAsync(sql, parameters, session.Transaction);
+        var cmd = new CommandDefinition(sql, parameters, session.Transaction, cancellationToken: ct);
+        var affected = await conn.ExecuteAsync(cmd);
         return affected > 0;
     }
 
@@ -333,5 +281,119 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
         }
 
         return string.Empty;
+    }
+
+    private static (string whereSql, DynamicParameters parameters) BuildWhereAndParams(
+        EntityMap map,
+        bool includeSoftDeleted,
+        string? filterField,
+        object? filterValue,
+        StringFilterMode stringMode,
+        bool forceLowerCase)
+    {
+        var whereParts = new List<string>();
+        if (!includeSoftDeleted && map.HasSoftDelete && !string.IsNullOrEmpty(map.SoftDeleteColumn))
+        {
+            whereParts.Add($"{Naming.Quote(map.SoftDeleteColumn)} = false");
+        }
+
+        var parameters = new DynamicParameters();
+
+        if (!string.IsNullOrWhiteSpace(filterField))
+        {
+            var resolved = ResolveColumn(map, filterField);
+            if (resolved is not null)
+            {
+                var colSql = Naming.Quote(resolved);
+
+                if (filterValue is string)
+                {
+                    parameters.Add("filter", filterValue);
+
+                    var colExpr = forceLowerCase ? $"lower({colSql})" : colSql;
+                    var valExpr = forceLowerCase ? "lower(@filter)" : "@filter";
+
+                    string likeKeyword = forceLowerCase ? "LIKE" : "ILIKE";
+
+                    switch (stringMode)
+                    {
+                        case StringFilterMode.Contains:
+                            whereParts.Add($"{colExpr} {likeKeyword} '%' || {valExpr} || '%'");
+                            break;
+                        case StringFilterMode.StartsWith:
+                            whereParts.Add($"{colExpr} {likeKeyword} {valExpr} || '%'");
+                            break;
+                        case StringFilterMode.EndsWith:
+                            whereParts.Add($"{colExpr} {likeKeyword} '%' || {valExpr}");
+                            break;
+                        default:
+                            whereParts.Add($"{colExpr} = {valExpr}");
+                            break;
+                    }
+                }
+                else
+                {
+                    parameters.Add("filter", filterValue);
+                    whereParts.Add($"{colSql} = @filter");
+                }
+            }
+        }
+
+        string where = whereParts.Count > 0 ? " where " + string.Join(" and ", whereParts) : string.Empty;
+        return (where, parameters);
+    }
+
+    public async Task<int> CountAsync(
+        IDbSession session,
+        bool includeSoftDeleted = false,
+        string? filterField = null,
+        object? filterValue = null,
+        StringFilterMode stringMode = StringFilterMode.Equals,
+        bool forceLowerCase = false,
+        CancellationToken ct = default)
+    {
+        if (session.Connection is null)
+            throw new InvalidOperationException("La sesión está cerrada. Llama a OpenAsync() primero.");
+
+        IDbConnection conn = session.Connection!;
+        var map = EntityMap.For(typeof(T));
+
+        var (where, parameters) = BuildWhereAndParams(map, includeSoftDeleted, filterField, filterValue, stringMode, forceLowerCase);
+
+        string sql = $"select count(*) from {map.TableFullQuoted}{where}";
+        var cmd = new CommandDefinition(sql, parameters, session.Transaction, cancellationToken: ct);
+        var total = await conn.ExecuteScalarAsync<long>(cmd);
+        return (int)total;
+    }
+
+    public async Task<Page<T>> PageAsync(
+        IDbSession session,
+        int page,
+        int size,
+        bool includeSoftDeleted = false,
+        string? orderBy = null,
+        SortDirection dir = SortDirection.Asc,
+        string? filterField = null,
+        object? filterValue = null,
+        StringFilterMode stringMode = StringFilterMode.Equals,
+        bool forceLowerCase = false,
+        CancellationToken ct = default)
+    {
+        if (page < 1) page = 1;
+        if (size < 1) size = 1;
+
+        int offset = (page - 1) * size;
+
+        var items = await GetAllAsync(session, includeSoftDeleted, orderBy, dir, size, offset,
+            filterField, filterValue, stringMode, forceLowerCase, ct);
+        var total = await CountAsync(session, includeSoftDeleted, filterField, filterValue, stringMode, forceLowerCase, ct);
+
+        return new Page<T>
+        {
+            Items = items,
+            Total = total,
+            PageNumber = page,
+            Size = size
+        };
     }
 }
