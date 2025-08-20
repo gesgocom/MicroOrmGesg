@@ -141,6 +141,103 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
         return affected > 0;
     }
 
+    // 7) Updates parciales y columnas específicas
+    // Genera SET solo con propiedades presentes en 'patch' (objeto o Dictionary<string,object?>)
+    // Whitelist por EntityMap y excluye soft delete y clave primaria.
+    public async Task<bool> UpdateSetAsync(IDbSession session, object id, object patch, CancellationToken ct = default)
+    {
+        if (session.Connection is null)
+            throw new InvalidOperationException("La sesión está cerrada. Llama a OpenAsync() primero.");
+
+        IDbConnection conn = session.Connection!;
+        var map = EntityMap.For(typeof(T));
+
+        // 1) Extraer pares (campo -> valor) desde patch
+        IEnumerable<KeyValuePair<string, object?>> entries;
+        if (patch is IDictionary<string, object?> dict)
+        {
+            entries = dict;
+        }
+        else
+        {
+            var props = patch.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public)
+                .Where(p => p.GetMethod is not null);
+            entries = props.Select(p => new KeyValuePair<string, object?>(p.Name, p.GetValue(patch)));
+        }
+
+        // 2) Mapa PropiedadEntidad -> nombre de columna real
+        var propByColumn = map.Props.ToDictionary(
+            p => p,
+            p => p.GetCustomAttribute<ColumnAttribute>()?.Name ?? Naming.ToSnake(p.Name),
+            EqualityComparer<PropertyInfo>.Default);
+
+        // 3) Construir SET y parámetros aplicando whitelist
+        var setParts = new List<string>();
+        var parameters = new DynamicParameters();
+
+        // @id en WHERE
+        parameters.Add("id", id);
+
+        foreach (var kv in entries)
+        {
+            var requestedField = kv.Key?.Trim();
+            if (string.IsNullOrWhiteSpace(requestedField)) continue;
+
+            var resolvedCol = ResolveColumn(map, requestedField);
+            if (resolvedCol is null) continue; // fuera de whitelist
+
+            // Excluir clave primaria y soft delete
+            if (string.Equals(resolvedCol, map.KeyColumn, StringComparison.OrdinalIgnoreCase)) continue;
+            if (map.HasSoftDelete && !string.IsNullOrEmpty(map.SoftDeleteColumn) &&
+                string.Equals(resolvedCol, map.SoftDeleteColumn, StringComparison.OrdinalIgnoreCase)) continue;
+
+            // Encontrar la propiedad de entidad asociada a esa columna (para detectar Jsonb/Computed/Write)
+            var prop = propByColumn.FirstOrDefault(x => string.Equals(x.Value, resolvedCol, StringComparison.OrdinalIgnoreCase)).Key;
+            if (prop is null) continue;
+
+            // Excluir [Computed] o [Write(Include=false)]
+            if (prop.GetCustomAttribute<ComputedAttribute>() is not null) continue;
+            if (prop.GetCustomAttribute<WriteAttribute>() is { Include: false }) continue;
+
+            // Excluir clave primaria (si no lo hicimos por columna ya)
+            if (prop == map.KeyProperty && prop.GetCustomAttribute<ExplicitKeyAttribute>() is null) continue;
+
+            var paramName = $"p_{prop.Name}"; // nombre de parámetro estable
+            var colSql = Naming.Quote(resolvedCol);
+
+            // Manejo especial JSONB igual que en BuildWriteParameters
+            var value = kv.Value;
+            bool hasJsonbAttr = prop.GetCustomAttribute<JsonbAttribute>() != null;
+            var t = prop.PropertyType;
+            bool isJsonType = typeof(JToken).IsAssignableFrom(t) || typeof(JObject).IsAssignableFrom(t) || typeof(JArray).IsAssignableFrom(t);
+            bool isJsonInstance = value is JToken || value is JObject || value is JArray;
+            bool isJsonLike = hasJsonbAttr || isJsonType || isJsonInstance;
+
+            if (isJsonLike)
+            {
+                var jsonString = value != null ? JsonConvert.SerializeObject(value) : null;
+                parameters.Add(paramName, new NpgsqlJsonbParameter(jsonString));
+            }
+            else
+            {
+                parameters.Add(paramName, value);
+            }
+
+            setParts.Add($"{colSql} = @{paramName}");
+        }
+
+        if (setParts.Count == 0)
+            throw new InvalidOperationException("No hay columnas válidas para actualizar con el patch proporcionado.");
+
+        var setClause = string.Join(", ", setParts);
+        var where = $" where {Naming.Quote(map.KeyColumn)} = @id";
+        var sql = $"update {map.TableFullQuoted} set {setClause}{where}";
+
+        var cmd = new CommandDefinition(sql, parameters, session.Transaction, cancellationToken: ct);
+        var affected = await conn.ExecuteAsync(cmd);
+        return affected > 0;
+    }
+
     public async Task<bool> DeleteAsync(IDbSession session, object id, CancellationToken ct = default)
     {
         if (session.Connection is null)

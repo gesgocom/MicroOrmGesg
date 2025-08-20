@@ -241,6 +241,7 @@ Task<Page<T>> PageAsync(
 Task<int> InsertAsync(IDbSession session, T data, CancellationToken ct = default);
 Task<object?> InsertAsyncReturnId(IDbSession session, T data, CancellationToken ct = default);
 Task<bool> UpdateAsync(IDbSession session, T data, CancellationToken ct = default);
+Task<bool> UpdateSetAsync(IDbSession session, object id, object patch, CancellationToken ct = default);
 Task<bool> DeleteAsync(IDbSession session, object id, CancellationToken ct = default);
 ```
 
@@ -254,6 +255,7 @@ Task<bool> DeleteAsync(IDbSession session, object id, CancellationToken ct = def
 - **`InsertAsync`**: Inserta con columnas **escribibles** (excluye `[Computed]`, `[Key]` salvo `[ExplicitKey]`, y la columna de soft delete). Devuelve filas afectadas.
 - **`InsertAsyncReturnId`**: Inserta y devuelve el **id** generado con `RETURNING <pk>`.
 - **`UpdateAsync`**: Actualiza por **PK**. **Excluye la columna de soft delete** en `SET`. Devuelve `true` si afectó ≥ 1 fila.
+- **`UpdateSetAsync` (nuevo)**: Actualiza por **PK** generando `SET` solo con las propiedades presentes en `patch` (objeto anónimo/DTO o `Dictionary<string,object?>`). Aplica una whitelist por `EntityMap` para evitar columnas inválidas y excluye siempre la columna de **soft delete** y la **PK**.
 - **`DeleteAsync`**:
     - Si hay soft delete → `UPDATE ... SET eliminado = true`.
     - Si no hay → `DELETE FROM ...`.
@@ -429,6 +431,36 @@ public class PreferenciasDto { public string Tema { get; set; } = "light"; }
 ---
 
 ## 🔎 Ejemplos de uso
+
+### Updates parciales y columnas específicas (nuevo)
+
+- Método: `Task<bool> UpdateSetAsync(IDbSession session, object id, object patch, CancellationToken ct = default)`
+- Genera `SET` únicamente con las propiedades presentes en `patch` (objeto o `Dictionary<string,object?>`).
+- Aplica whitelist por `EntityMap` (propiedad, `snake_case` o `[Column]`); ignora campos no válidos.
+- Excluye siempre la PK y la columna de soft delete.
+- Maneja correctamente columnas `jsonb` (usando `NpgsqlDbType.Jsonb`).
+
+Ejemplos:
+
+```csharp
+// 1) Objeto anónimo / DTO
+var ok1 = await repo.UpdateSetAsync(db, id: 10, new { Nombre = "Alice", Usuario = "alice2" }, ct);
+
+// 2) snake_case o nombre exacto de [Column]
+var ok2 = await repo.UpdateSetAsync(db, 10, new { password_hash = "xxx" }, ct);
+
+// 3) Diccionario (por ejemplo, desde un payload dinámico)
+var patch = new Dictionary<string, object?>
+{
+    ["Nombre"] = "Alice Doe",
+    ["preferencias"] = JObject.FromObject(new { tema = "dark" }) // jsonb
+};
+var ok3 = await repo.UpdateSetAsync(db, 10, patch, ct);
+```
+
+Notas:
+- Si ninguna columna es válida tras aplicar la whitelist, lanza `InvalidOperationException`.
+- Los nombres de campo admiten: nombre de propiedad C#, su `snake_case` o el nombre exacto definido en `[Column]` (case-insensitive).
 
 ### Paginación con total (PageAsync) y conteo (CountAsync)
 
@@ -632,3 +664,156 @@ private static string? ResolveColumn(EntityMap map, string field)
 - [ ] Combinar filtros con `orderBy`, `limit` y `offset` para optimizar consultas grandes.
 
 
+
+
+---
+
+## 🧱 Implementación completa (Repositorio + DI + Servicio/Controlador con PATCH)
+
+A continuación, un ejemplo de punta a punta mostrando cómo implementar y usar `UpdateSetAsync` en un proyecto ASP.NET Core.
+
+### 1) Entidad de ejemplo
+```csharp
+using Newtonsoft.Json.Linq;
+using MicroOrmGesg;
+
+[Table("usuarios", Schema = "public")]
+public sealed class Usuarios
+{
+    [Key] public int Id { get; set; }
+
+    public string Nombre { get; set; } = default!;
+    public string Usuario { get; set; } = default!;
+
+    [Column("password_hash")]
+    public string PasswordHash { get; set; } = default!;
+
+    [SoftDelete]
+    public bool Eliminado { get; set; }
+
+    [Jsonb] public JObject? Preferencias { get; set; }
+}
+```
+
+### 2) Registro en DI (repositorio e infraestructura)
+```csharp
+// Program.cs / Startup.cs
+services.AddScoped<IDbSession, DbSession>();
+
+// Puedes registrar directamente el repositorio genérico para la entidad
+services.AddScoped<MicroOrmGesg.Interfaces.IDataMicroOrm<Usuarios>, MicroOrmGesg.Repository.DataMicroOrmRepository<Usuarios>>();
+
+// TypeHandlers de Newtonsoft para Dapper (lectura de json)
+SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JObjectTypeHandler());
+SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JArrayTypeHandler());
+SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JTokenTypeHandler());
+```
+
+Opcionalmente, si prefieres un repositorio concreto para añadir métodos específicos, crea una clase vacía que herede:
+```csharp
+using MicroOrmGesg.Repository;
+using MicroOrmGesg.Interfaces;
+
+public sealed class UsuariosRepository : DataMicroOrmRepository<Usuarios>, IDataMicroOrm<Usuarios>
+{
+    // Métodos específicos si los necesitas…
+}
+```
+Y registra `UsuariosRepository` en lugar del genérico.
+
+### 3) DTO para PATCH (opcional)
+```csharp
+public sealed class UsuarioPatchDto
+{
+    public string? Nombre { get; set; }
+    public string? Usuario { get; set; }
+    public string? PasswordHash { get; set; }
+    public JObject? Preferencias { get; set; } // jsonb
+}
+```
+
+### 4) Servicio de dominio (usa IDbSession + repositorio)
+```csharp
+using MicroOrmGesg.Interfaces;
+
+public sealed class UsuariosService
+{
+    private readonly IDbSession _db;
+    private readonly IDataMicroOrm<Usuarios> _repo;
+
+    public UsuariosService(IDbSession db, IDataMicroOrm<Usuarios> repo)
+    {
+        _db = db;
+        _repo = repo;
+    }
+
+    public async Task<bool> PatchAsync(int id, object patch, CancellationToken ct)
+    {
+        await _db.OpenAsync(ct);
+        await _db.BeginTransactionAsync(ct: ct);
+        try
+        {
+            var ok = await _repo.UpdateSetAsync(_db, id, patch, ct);
+            await _db.CommitAsync(ct);
+            return ok;
+        }
+        catch
+        {
+            await _db.RollbackAsync(ct);
+            throw;
+        }
+    }
+}
+```
+
+### 5) Controlador: endpoints con PATCH usando DTO o Dictionary
+```csharp
+using Microsoft.AspNetCore.Mvc;
+using Newtonsoft.Json.Linq;
+
+[ApiController]
+[Route("api/[controller]")]
+public sealed class UsuariosController : ControllerBase
+{
+    private readonly UsuariosService _service;
+    private readonly IDbSession _db; // Para lecturas posteriores si quieres
+    private readonly MicroOrmGesg.Interfaces.IDataMicroOrm<Usuarios> _repo;
+
+    public UsuariosController(UsuariosService service, IDbSession db, MicroOrmGesg.Interfaces.IDataMicroOrm<Usuarios> repo)
+    {
+        _service = service;
+        _db = db;
+        _repo = repo;
+    }
+
+    // PATCH con DTO tipado
+    [HttpPatch("{id:int}")]
+    public async Task<IActionResult> PatchDto(int id, [FromBody] UsuarioPatchDto dto, CancellationToken ct)
+    {
+        var ok = await _service.PatchAsync(id, dto, ct);
+        if (!ok) return NotFound();
+
+        await _db.OpenAsync(ct);
+        var updated = await _repo.GetByIdAsync(_db, id, ct);
+        return Ok(updated);
+    }
+
+    // PATCH con Dictionary (flexible)
+    [HttpPatch("{id:int}/dynamic")]
+    public async Task<IActionResult> PatchDynamic(int id, [FromBody] Dictionary<string, object?> patch, CancellationToken ct)
+    {
+        // Ejemplo: puedes enviar keys como "Nombre", "password_hash" o "preferencias" (jsonb)
+        var ok = await _service.PatchAsync(id, patch, ct);
+        if (!ok) return NotFound();
+
+        await _db.OpenAsync(ct);
+        var updated = await _repo.GetByIdAsync(_db, id, ct);
+        return Ok(updated);
+    }
+}
+```
+
+Notas importantes:
+- Los nombres de campos aceptados en `patch` son el nombre de propiedad C#, su `snake_case`, o el nombre exacto definido en `[Column]` (case-insensitive).
+- La PK y la columna de soft delete se excluyen automáticamente del `SET`.
+- Para valores `jsonb`, puedes pasar `JObject/JArray/JToken` o cualquier objeto serializable (siempre que marques la propiedad con `[Jsonb]`).

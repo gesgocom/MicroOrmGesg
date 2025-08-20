@@ -45,5 +45,11 @@ public interface IDataMicroOrm<T> where T:class
     Task<int> InsertAsync(IDbSession session, T data, CancellationToken ct = default);
     Task<object?> InsertAsyncReturnId(IDbSession session, T data, CancellationToken ct = default);
     Task<bool> UpdateAsync(IDbSession session, T data, CancellationToken ct = default);
+    
+    // 7) Updates parciales y columnas específicas
+    // Genera SET solo con propiedades presentes en 'patch' (objeto o Dictionary<string,object?>)
+    // Whitelist según EntityMap y excluye soft delete.
+    Task<bool> UpdateSetAsync(IDbSession session, object id, object patch, CancellationToken ct = default);
+    
     Task<bool> DeleteAsync(IDbSession session, object id, CancellationToken ct = default);
 }
