@@ -25,6 +25,7 @@ Tabla de contenidos
 - [Notas y buenas prácticas](#toc-notas)
 - [Checklist rápido](#toc-checklist)
 - [Historial de Cambios](#toc-historial)
+- [Anexo (mejor explicado)](#anexo)
 
 <a id="toc-introduccion"></a>
 ## Introducción
@@ -178,9 +179,11 @@ Mantén los TypeHandlers para deserializar automáticamente a JObject/JArray/JTo
 ## Paginación y conteo
 - PageAsync devuelve datos y total; CountAsync permite conteos simples con filtros seguros.
 
+<a id="toc-validacion"></a>
 ## Validación de modelos
 - Atributos de validación en modelos y utilidades para comprobar reglas antes de persistir.
 
+<a id="toc-funciones"></a>
 ## Ejecución genérica de funciones PostgreSQL
 Usa IDataFunctions para invocar funciones sin acoplar a una entidad T.
 ```csharp
@@ -207,15 +210,18 @@ bool ok = await _funcs.CallFunctionAsync<bool>(_db, "usar_token_cambiar_password
 int? eliminados = await _funcs.CallFunctionAsync<int>(_db, "limpiar_tokens_expirados", ct: ct);
 ```
 
+<a id="toc-ejemplos"></a>
 ## Ejemplos prácticos
 - Updates parciales y columnas específicas (PATCH): uso de DTO o Dictionary, exclusión de PK/soft delete y mapeo flexible de nombres.
 - Controladores ASP.NET Core con CancellationToken.
 
+<a id="toc-notas"></a>
 ## Notas y buenas prácticas
 - Usa CancellationToken (`HttpContext.RequestAborted`) y propágalo.
 - Maneja jsonb explícitamente en escritura (NpgsqlDbType.Jsonb).
 - Asegura filtros parametrizados y sanitización al construir SQL dinámico.
 
+<a id="toc-checklist"></a>
 ## Checklist rápido
 - DataSource registrado como Singleton; DbSession como Scoped.
 - TypeHandlers de Newtonsoft para JObject/JArray/JToken.
@@ -223,6 +229,7 @@ int? eliminados = await _funcs.CallFunctionAsync<int>(_db, "limpiar_tokens_expir
 - Propagación de CancellationToken en todos los métodos asíncronos.
 - Repositorios y ejecutor de funciones registrados en DI.
 
+<a id="toc-historial"></a>
 ## Historial de Cambios (resumen)
 - CancellationToken en API pública (cooperación con ASP.NET Core).
 - JSONB explícito en escritura (NpgsqlDbType.Jsonb) manteniendo lectura con TypeHandlers.
@@ -233,7 +240,23 @@ int? eliminados = await _funcs.CallFunctionAsync<int>(_db, "limpiar_tokens_expir
 
 ---
 
+<a id="anexo"></a>
 # Anexo — Guía completa y detallada (profundización por temas)
+
+Enlaces rápidos a temas
+- [Introducción](#toc-introduccion)
+- [Instalación y registro (DI)](#toc-instalacion-di)
+- [DbSession](#toc-dbsession)
+- [Repositorio genérico](#toc-repo-generico)
+- [Atributos y EntityMap](#toc-atributos-entitymap)
+- [JSONB](#toc-jsonb)
+- [Paginación y conteo](#toc-paginacion)
+- [Validación de modelos](#toc-validacion)
+- [Funciones PostgreSQL](#toc-funciones)
+- [Ejemplos](#toc-ejemplos)
+- [Notas y buenas prácticas](#toc-notas)
+- [Checklist](#toc-checklist)
+- [Historial](#toc-historial)
 
 Este anexo amplía en profundidad cada tema del índice principal. Mantiene la estructura temática, añade explicaciones exhaustivas, ejemplos prácticos, firmas exactas, decisiones de diseño, gotchas, FAQ, rendimiento y seguridad. Todos los fragmentos reflejan el código actual del repositorio.
 
