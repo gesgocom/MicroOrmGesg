@@ -497,6 +497,7 @@ public class DataMicroOrmRepository<T> : IDataMicroOrm<T> where T : class
         };
     }
 
+
     // Parameter wrapper to force jsonb explicitly when writing (INSERT/UPDATE) with Dapper
     private sealed class NpgsqlJsonbParameter : SqlMapper.ICustomQueryParameter
     {

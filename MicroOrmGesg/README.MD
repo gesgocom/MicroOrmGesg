@@ -1,92 +1,77 @@
-# Configuración de MicroOrmGesg 1.0
+# MicroOrmGesg — Guía de uso por temas
 
+Este documento está organizado por temas con un índice navegable.
+
+Tabla de contenidos
+- [Introducción](#toc-introduccion)
+- [Instalación y registro (DI)](#toc-instalacion-di)
+- [DbSession (conexiones y transacciones)](#toc-dbsession)
+  - [Características](#toc-db-caracteristicas)
+  - [Registro en el contenedor](#toc-di-registro)
+  - [Ejemplos de uso (servicio y controlador)](#toc-db-ejemplos)
+  - [Métodos disponibles](#toc-db-metodos)
+- [Repositorio genérico (Dapper + Npgsql)](#toc-repo-generico)
+  - [Interfaz y firma de métodos](#toc-repo-interfaz)
+  - [Comportamiento de cada método](#toc-repo-comportamiento)
+- [Atributos y EntityMap](#toc-atributos-entitymap)
+- [JSONB con Newtonsoft.Json](#toc-jsonb)
+  - [Escritura (INSERT/UPDATE)](#toc-jsonb-escritura)
+  - [Lectura (SELECT)](#toc-jsonb-lectura)
+  - [Modelado](#toc-jsonb-modelado)
+- [Paginación y conteo](#toc-paginacion)
+- [Validación de modelos](#toc-validacion)
+- [Ejecución genérica de funciones PostgreSQL](#toc-funciones)
+- [Ejemplos prácticos](#toc-ejemplos)
+- [Notas y buenas prácticas](#toc-notas)
+- [Checklist rápido](#toc-checklist)
+- [Historial de Cambios](#toc-historial)
+
+<a id="toc-introduccion"></a>
+## Introducción
+MicroOrmGesg es un micro ORM basado en Dapper y Npgsql que facilita operaciones CRUD, paginación, filtrado y manejo de JSONB en PostgreSQL. Incluye DbSession para gestionar conexiones/transacciones, un repositorio genérico tipado, utilidades de mapeo y ejecución genérica de funciones PostgreSQL.
+
+<a id="toc-instalacion-di"></a>
+## Instalación y registro (DI)
+Compila e instala el paquete según tu flujo (NuGet). Ejemplo de build local:
 ```
 dotnet build --configuration Release
 ```
-
----
-
-# Cambios: CancellationToken en API pública (1.2)
-
-A partir de la versión 1.2:
-- Todas las APIs públicas del repositorio (`GetByIdAsync`, `GetAllAsync`, `InsertAsync`, `InsertAsyncReturnId`, `UpdateAsync`, `DeleteAsync`) aceptan `CancellationToken ct = default`.
-- Se propaga el `ct` a `DbSession.OpenAsync`, `BeginTransactionAsync`, y a las operaciones Dapper usando `CommandDefinition` (para cancelación cooperativa).
-- Esto mejora la cooperación con ASP.NET Core (`HttpContext.RequestAborted`) y evita trabajo innecesario ante cancelaciones.
-
-Ejemplo en controlador ASP.NET Core:
+<a id="toc-di-registro"></a>
+Registros típicos en Program.cs / Startup.cs:
 ```csharp
-[HttpGet("{id:int}")]
-public async Task<IActionResult> Get(int id, CancellationToken ct)
-{
-    await _db.OpenAsync(ct);
-    var entity = await _repo.GetByIdAsync(_db, id, ct);
-    return entity is null ? NotFound() : Ok(entity);
-}
-```
-
----
-
-# Cambios: JSONB explícito en escritura (1.3)
-
-A partir de la versión 1.3:
-
-3) JSONB explícito en escritura
-- Para propiedades marcadas con `[Jsonb]` o de tipo `JToken`/`JObject`/`JArray`, se usa `NpgsqlParameter` con `NpgsqlDbType.Jsonb` en operaciones de escritura (INSERT/UPDATE) para no depender de conversiones implícitas de proveedor.
-- Se mantienen los TypeHandlers (Newtonsoft + Dapper) para lectura y compatibilidad hacia atrás, de modo que los `SELECT` sigan deserializando automáticamente a `JObject`/`JArray`/`JToken`.
-
-Ejemplo (resumen) del manejo de parámetros en escritura:
-```csharp
-var jsonString = value != null ? JsonConvert.SerializeObject(value) : null;
-var np = new NpgsqlParameter(paramName, NpgsqlDbType.Jsonb)
-{
-    Value = (object?)jsonString ?? DBNull.Value
-};
-dp.Add(paramName, np);
-```
-
-Nota: Si ya registraste los `TypeHandler` de `JObject`/`JArray`/`JToken`, no necesitas cambios para lectura; esta versión únicamente hace explícito el tipo `jsonb` en escritura para mayor robustez.
-
----
-
-
-# DbSession — Gestión de Conexiones y Transacciones en PostgreSQL
-
-`DbSession` es una clase que encapsula la gestión de una conexión única y opcionalmente una transacción para cada petición o unidad de trabajo.  
-Está diseñada para **PostgreSQL** usando `NpgsqlDataSource` (pool de conexiones de alto rendimiento) y pensada para funcionar en entornos con **Inyección de Dependencias (DI)** en ASP.NET Core.
-
----
-
-## Características principales
-- **Scoped por request**: una única conexión y transacción por cada petición HTTP (si lo registras como `Scoped`).
-- **Compatibilidad async/sync**: expone métodos asíncronos y síncronos para mayor flexibilidad.
-- **Control explícito de transacciones**: `BeginTransactionAsync`, `CommitAsync`, `RollbackAsync`.
-- **Liberación segura de recursos**: implementa `IDisposable` e `IAsyncDisposable`.
-- **Integración directa con `Npgsql`**: acceso completo a funcionalidades específicas de PostgreSQL.
-
----
-
-## Registro en el contenedor de servicios (Scoped)
-
-En tu `Program.cs` o `Startup.cs`, añade:
-
-```csharp
-// Registrar el DataSource como Singleton (pool de conexiones)
+// NpgsqlDataSource como Singleton (pool de conexiones)
 services.AddSingleton(sp =>
 {
     var cs = Configuration.GetConnectionString("ServidorSQL") ?? string.Empty;
     var dsBuilder = new NpgsqlDataSourceBuilder(cs);
-    dsBuilder.UseNodaTime(); 
-    return dsBuilder.Build(); 
+    dsBuilder.UseNodaTime();
+    return dsBuilder.Build();
 });
 
-// Registrar DbSession como Scoped (nueva instancia por request)
+// DbSession como Scoped
 services.AddScoped<IDbSession, DbSession>();
+
+// Repositorio genérico por entidad
+services.AddScoped(typeof(MicroOrmGesg.Interfaces.IDataMicroOrm<>), typeof(MicroOrmGesg.Repository.DataMicroOrmRepository<>));
+
+// Ejecutor genérico de funciones PostgreSQL
+services.AddScoped<MicroOrmGesg.Interfaces.IDataFunctions, MicroOrmGesg.Repository.DataFunctionsRepository>();
 ```
 
----
+<a id="toc-dbsession"></a>
+## DbSession (conexiones y transacciones)
+`DbSession` encapsula la gestión de una conexión y una transacción opcional por unidad de trabajo, pensado para ASP.NET Core y Npgsql.
 
-## Ejemplo de uso en un servicio
+<a id="toc-db-caracteristicas"></a>
+### Características
+- Scoped por request (si se registra como Scoped).
+- Métodos asíncronos y síncronos.
+- Control explícito de transacciones: BeginTransaction/Commit/Rollback.
+- Libera recursos de forma segura (IDisposable/IAsyncDisposable).
+- Integración directa con Npgsql.
 
+<a id="toc-db-ejemplos"></a>
+### Ejemplo de uso en un servicio
 ```csharp
 public class PersonaService
 {
@@ -99,7 +84,6 @@ public class PersonaService
 
     public async Task CrearPersonaAsync(string nombre, CancellationToken ct = default)
     {
-        // Abrir conexión y comenzar transacción
         await _db.OpenAsync(ct);
         await _db.BeginTransactionAsync(ct: ct);
 
@@ -107,13 +91,10 @@ public class PersonaService
         {
             var sql = "INSERT INTO personas(nombre) VALUES (@nombre)";
             await _db.Connection!.ExecuteAsync(sql, new { nombre }, _db.Transaction);
-
-            // Confirmar transacción
             await _db.CommitAsync(ct);
         }
         catch
         {
-            // Deshacer transacción si hay error
             await _db.RollbackAsync(ct);
             throw;
         }
@@ -121,363 +102,322 @@ public class PersonaService
 }
 ```
 
----
-
-## Ejemplo de uso en un controlador
-
+<a id="toc-db-ejemplos"></a>
+### Ejemplo de uso en un controlador
 ```csharp
 [ApiController]
-[Route("api/[controller]")]
+[Route("api/personas")]
 public class PersonasController : ControllerBase
 {
-    private readonly PersonaService _personaService;
+    private readonly IDbSession _db;
 
-    public PersonasController(PersonaService personaService)
+    public PersonasController(IDbSession db)
     {
-        _personaService = personaService;
+        _db = db;
     }
 
-    [HttpPost]
-    public async Task<IActionResult> Crear([FromBody] string nombre)
+    [HttpGet("{id:int}")]
+    public async Task<IActionResult> GetById(int id, CancellationToken ct)
     {
-        await _personaService.CrearPersonaAsync(nombre);
-        return Ok(new { message = "Persona creada correctamente" });
+        await _db.OpenAsync(ct);
+        using var cmd = new CommandDefinition("SELECT * FROM personas WHERE id = @id", new { id }, cancellationToken: ct);
+        var result = await _db.Connection!.QueryFirstOrDefaultAsync<object>(cmd);
+        return result is null ? NotFound() : Ok(result);
     }
 }
 ```
 
----
+<a id="toc-db-metodos"></a>
+### Métodos disponibles en DbSession
+- OpenAsync/BeginTransactionAsync/CommitAsync/RollbackAsync/DisposeAsync… (ver secciones superiores para detalles y firmas completas).
 
-## Métodos disponibles en `DbSession`
+<a id="toc-repo-generico"></a>
+## Repositorio genérico (Dapper + Npgsql)
+Interfaz principal tipada por entidad que ofrece CRUD, listado, filtro, paginación y conteo.
 
-| Método                       | Descripción |
-|------------------------------|-------------|
-| `Task<NpgsqlConnection> OpenAsync()` | Abre o reutiliza una conexión desde el pool. |
-| `Task BeginTransactionAsync()` | Inicia una transacción en la conexión actual. |
-| `Task CommitAsync()`         | Confirma la transacción activa. |
-| `Task RollbackAsync()`       | Revierte la transacción activa. |
-| `void Close()`               | Cierra manualmente la conexión. |
-| `Dispose()` / `DisposeAsync()` | Libera recursos (transacción y conexión). |
+<a id="toc-repo-interfaz"></a>
+### Interfaz (resumen)
+- GetByIdAsync
+- GetAllAsync
+- InsertAsync / InsertAsyncReturnId
+- UpdateAsync
+- DeleteAsync
+- CountAsync
+- PageAsync
 
----
-
-## Notas importantes
-- **Siempre** llama a `BeginTransactionAsync` antes de operaciones que deban confirmarse o revertirse como bloque.
-- Si no necesitas transacciones, puedes usar `OpenAsync` y ejecutar consultas directamente.
-- El contenedor DI se encargará de llamar a `Dispose()` o `DisposeAsync()` al final del `Scope`.
-- No reutilices la misma instancia de `DbSession` entre diferentes peticiones HTTP.
-
----
-
-# MicroOrmGesg – Repositorio Genérico (Dapper + Npgsql, Newtonsoft)
-
-Guía práctica para usar el repositorio genérico **`DataMicroOrmRepository<T>`** con PostgreSQL, soportando **soft delete**, **paginación/ordenación**, y **campos `jsonb`** con **Newtonsoft.Json**.
-
----
-
-## 📦 Instalación y registro (startup)
-
-Asegúrate de tener Npgsql y Dapper configurados y el `IDbSession` registrado.
-
-```csharp
-// Program.cs / Startup.cs
-services.AddNpgsqlDataSource(Configuration.GetConnectionString("ServidorSQL")!, b =>
-{
-    b.EnableRetryOnFailure();
-    b.UseNodaTime();
-});
-
-services.AddScoped<IDbSession, DbSession>(); // tu implementación
-
-// Dapper type handlers para JSON (Newtonsoft)
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JObjectTypeHandler());
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JArrayTypeHandler());
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JTokenTypeHandler());
-```
-> Si no tienes `AddNpgsqlDataSource`, crea el `NpgsqlDataSource` manualmente y regístralo como singleton.
-
----
-
-## 🧩 Interfaz del repositorio
-
-```csharp
-Task<T?> GetByIdAsync(IDbSession session, object id, CancellationToken ct = default);
-
-Task<List<T>> GetAllAsync(
-    IDbSession session,
-    bool includeSoftDeleted = false,
-    string? orderBy = null,
-    SortDirection dir = SortDirection.Asc,
-    int? limit = null,
-    int? offset = null,
-    string? filterField = null,
-    object? filterValue = null,
-    StringFilterMode stringMode = StringFilterMode.Equals,
-    bool forceLowerCase = false,
-    CancellationToken ct = default);
-
-Task<int> CountAsync(
-    IDbSession session,
-    bool includeSoftDeleted = false,
-    string? filterField = null,
-    object? filterValue = null,
-    StringFilterMode stringMode = StringFilterMode.Equals,
-    bool forceLowerCase = false,
-    CancellationToken ct = default);
-
-Task<Page<T>> PageAsync(
-    IDbSession session,
-    int page,
-    int size,
-    bool includeSoftDeleted = false,
-    string? orderBy = null,
-    SortDirection dir = SortDirection.Asc,
-    string? filterField = null,
-    object? filterValue = null,
-    StringFilterMode stringMode = StringFilterMode.Equals,
-    bool forceLowerCase = false,
-    CancellationToken ct = default);
-
-Task<int> InsertAsync(IDbSession session, T data, CancellationToken ct = default);
-Task<object?> InsertAsyncReturnId(IDbSession session, T data, CancellationToken ct = default);
-Task<bool> UpdateAsync(IDbSession session, T data, CancellationToken ct = default);
-Task<bool> UpdateSetAsync(IDbSession session, object id, object patch, CancellationToken ct = default);
-Task<bool> DeleteAsync(IDbSession session, object id, CancellationToken ct = default);
-```
-
+<a id="toc-repo-comportamiento"></a>
 ### Comportamiento de cada método
+- Respeta columnas ignoradas, PK, soft delete y atributos de mapeo; usa parámetros para evitar SQL injection; propaga CancellationToken.
 
-- **`GetByIdAsync`**: `SELECT` por **clave primaria**. El `SELECT` usa alias de propiedad para que Dapper mapee limpio.
-- **`GetAllAsync`**:
-    - Filtra automáticamente por **soft delete** si existe (`WHERE eliminado = false`).
-    - **Ordenación** por nombre de **propiedad** o por `snake_case` (whitelist; `OrdinalIgnoreCase` en `snake_case`).
-    - **Paginación** con `limit` y `offset` parametrizados.
-- **`InsertAsync`**: Inserta con columnas **escribibles** (excluye `[Computed]`, `[Key]` salvo `[ExplicitKey]`, y la columna de soft delete). Devuelve filas afectadas.
-- **`InsertAsyncReturnId`**: Inserta y devuelve el **id** generado con `RETURNING <pk>`.
-- **`UpdateAsync`**: Actualiza por **PK**. **Excluye la columna de soft delete** en `SET`. Devuelve `true` si afectó ≥ 1 fila.
-- **`UpdateSetAsync` (nuevo)**: Actualiza por **PK** generando `SET` solo con las propiedades presentes en `patch` (objeto anónimo/DTO o `Dictionary<string,object?>`). Aplica una whitelist por `EntityMap` para evitar columnas inválidas y excluye siempre la columna de **soft delete** y la **PK**.
-- **`DeleteAsync`**:
-    - Si hay soft delete → `UPDATE ... SET eliminado = true`.
-    - Si no hay → `DELETE FROM ...`.
+<a id="toc-atributos-entitymap"></a>
+## Atributos y EntityMap
+Soporta atributos como [Table], [Column], [Key], [Ignore], [Jsonb], etc., además de convenciones de nombre (snake_case) mediante EntityMap.
 
----
-
-## 🏷️ Atributos disponibles
-
-Colócalos en tu proyecto (namespace `MicroOrmGesg`) y úsalos en tus modelos.
-
-```csharp
-[AttributeUsage(AttributeTargets.Class)]
-public sealed class TableAttribute : Attribute
-{
-    public TableAttribute(string name) => Name = name;
-    public string Name { get; }
-    public string? Schema { get; init; }
-}
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class KeyAttribute : Attribute {}                 // PK autoincrement (identity/serial)
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class ExplicitKeyAttribute : Attribute {}         // PK manual (no generado por DB)
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class ComputedAttribute : Attribute {}            // Solo lectura (excluir en INSERT/UPDATE)
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class SoftDeleteAttribute : Attribute {}          // Marca la columna booleana de soft delete
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class WriteAttribute : Attribute { public bool Include { get; init; } = true; } // excluir en writes
-
-[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
-public sealed class ColumnAttribute : Attribute
-{
-    public ColumnAttribute(string name) { Name = name; }
-    public string Name { get; }
-}
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class JsonbAttribute : Attribute {}               // Fuerza tratamiento como jsonb
-```
-
-### Ejemplo de modelo
-
-```csharp
-using Newtonsoft.Json.Linq;
-
-[Table("usuarios", Schema = "public")]
-public sealed class Usuarios
-{
-    [Key] public int Id { get; set; }
-
-    public string Nombre { get; set; } = default!;
-    public string Usuario { get; set; } = default!;
-
-    [Column("password_hash")]
-    public string PasswordHash { get; set; } = default!;
-
-    [SoftDelete]
-    public bool Eliminado { get; set; }
-
-    // JSONB (opción 1): objetos newtonsoft
-    [Jsonb] public JObject? Preferencias { get; set; }  // objeto o array
-    [Jsonb] public JToken?  Roles        { get; set; }  // flexible
-}
-```
-
-> Si la columna en DB no coincide con el nombre de la propiedad, usa `[Column("nombre_columna")]`.
-
----
-
-## 🧠 Convenciones del `EntityMap`
-
-- **Tabla**: `[Table(Name, Schema)]`. Si no hay, nombre de clase en `snake_case`. Quote por partes → `"schema"."tabla"`.
-- **Columnas**: por defecto `snake_case` de la propiedad, pero respeta **`[Column]`**.
-- **SELECT**: `columna_real AS "PropiedadCSharp"` para que Dapper mapee sin fricciones.
-- **WritableProps**: excluye `[Computed]`, `[Write(Include=false)]`, **PK** salvo `[ExplicitKey]`, y **soft delete** si existe.
-
----
-
-## 🧾 JSONB con Newtonsoft.Json
-
+<a id="toc-jsonb"></a>
+## JSONB con Newtonsoft.Json
+<a id="toc-jsonb-escritura"></a>
 ### Escritura (INSERT/UPDATE)
-Si la propiedad es `JObject/JArray/JToken` **o** lleva `[Jsonb]`, el helper construye parámetros **`NpgsqlDbType.Jsonb`** y serializa con **`JsonConvert`**.
-
+Para propiedades [Jsonb] o tipos JToken/JObject/JArray, en escritura se usa `NpgsqlParameter` con `NpgsqlDbType.Jsonb`:
 ```csharp
-private static DynamicParameters BuildWriteParameters<TModel>(EntityMap map, TModel data, bool includeKeyParam = false)
+var jsonString = value != null ? JsonConvert.SerializeObject(value) : null;
+var np = new NpgsqlParameter(paramName, NpgsqlDbType.Jsonb)
 {
-    var dp = new DynamicParameters();
-
-    foreach (var p in map.WritableProps)
-    {
-        var paramName = p.Name;
-        var value = p.GetValue(data);
-
-        bool isJsonLike =
-            p.GetCustomAttribute<JsonbAttribute>() != null ||
-            value is JObject || value is JArray || value is JToken;
-
-        if (isJsonLike)
-        {
-            var jsonString = value != null ? JsonConvert.SerializeObject(value) : null;
-            var np = new NpgsqlParameter(paramName, NpgsqlDbType.Jsonb)
-            {
-                Value = (object?)jsonString ?? DBNull.Value
-            };
-            dp.Add(paramName, np);
-        }
-        else
-        {
-            dp.Add(paramName, value);
-        }
-    }
-
-    if (includeKeyParam)
-    {
-        var keyParamName = map.KeyProperty.Name;
-        var keyVal = map.KeyProperty.GetValue(data);
-        dp.Add(keyParamName, keyVal);
-    }
-
-    return dp;
-}
+    Value = (object?)jsonString ?? DBNull.Value
+};
+dp.Add(paramName, np);
 ```
-
+<a id="toc-jsonb-lectura"></a>
 ### Lectura (SELECT)
-Registra **TypeHandlers** para que Dapper deserialice automáticamente a `JObject`/`JArray`/`JToken`:
+Mantén los TypeHandlers para deserializar automáticamente a JObject/JArray/JToken.
 
+<a id="toc-jsonb-modelado"></a>
+### Modelado
+- Propiedades complejas pueden mapearse a jsonb. Puedes pasar JObject/JArray/JToken o un objeto serializable si marcas con [Jsonb].
+
+<a id="toc-paginacion"></a>
+## Paginación y conteo
+- PageAsync devuelve datos y total; CountAsync permite conteos simples con filtros seguros.
+
+## Validación de modelos
+- Atributos de validación en modelos y utilidades para comprobar reglas antes de persistir.
+
+## Ejecución genérica de funciones PostgreSQL
+Usa IDataFunctions para invocar funciones sin acoplar a una entidad T.
 ```csharp
-public sealed class JObjectTypeHandler : SqlMapper.TypeHandler<JObject?>
+public interface IDataFunctions
 {
-    public override JObject? Parse(object value)
-        => value is null || value is DBNull ? null : JsonConvert.DeserializeObject<JObject>(value.ToString()!);
-    public override void SetValue(IDbDataParameter parameter, JObject? value)
-        => parameter.Value = value is null ? DBNull.Value : JsonConvert.SerializeObject(value);
+    Task<TResult?> CallFunctionAsync<TResult>(IDbSession session, string functionName, object? args = null, string? schema = null, CancellationToken ct = default);
+    Task<List<TResult>> CallFunctionListAsync<TResult>(IDbSession session, string functionName, object? args = null, string? schema = null, CancellationToken ct = default);
+    Task CallVoidFunctionAsync(IDbSession session, string functionName, object? args = null, string? schema = null, CancellationToken ct = default);
 }
-
-// Análogo para JArray y JToken…
-
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JObjectTypeHandler());
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JArrayTypeHandler());
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JTokenTypeHandler());
 ```
-
-### Modelado – opciones
-
-**Opción A (recomendada)** – Tipos Newtonsoft directos
+Reglas:
+- Escalar/un solo registro: `SELECT schema.func(@p1, ...)`.
+- Conjuntos (TABLE/SETOF): `SELECT * FROM schema.func(@p1, ...)`.
+- `args` puede ser anónimo o IDictionary<string, object?>.
+Ejemplo:
 ```csharp
-[Jsonb] public JObject? Preferencias { get; set; }
-[Jsonb] public JToken?  Roles        { get; set; }
-```
-- ✅ Lectura/escritura automática (con handlers).
-- ✅ Puedes mutar el JSON como objeto.
+await _db.OpenAsync(ct);
+string? token = await _funcs.CallFunctionAsync<string>(_db, "generar_token_recuperacion", new { p_idusuario = 1, p_ip_solicitud = "1.2.3.4", p_duracion_horas = 24 }, schema: null, ct);
 
-**Opción B** – Guardar como `string`
-```csharp
-[Jsonb] public string? Preferencias { get; set; }
+public sealed class ValidacionDto { public bool Valido { get; set; } public int? IdUsuario { get; set; } public string? Mensaje { get; set; } public int Intentos { get; set; } }
+var lista = await _funcs.CallFunctionListAsync<ValidacionDto>(_db, "validar_token_recuperacion", new { p_token = token }, schema: null, ct);
+await _funcs.CallVoidFunctionAsync(_db, "incrementar_intento_token", new { p_token = token }, ct: ct);
+bool ok = await _funcs.CallFunctionAsync<bool>(_db, "usar_token_cambiar_password", new { p_token = token, p_nuevo_password_hash = hash, p_ip_uso = "1.2.3.4" }, schema: null, ct) ?? false;
+int? eliminados = await _funcs.CallFunctionAsync<int>(_db, "limpiar_tokens_expirados", ct: ct);
 ```
-- ✅ Escritura correcta como `jsonb`.
-- 🔶 Lectura te devuelve la cadena JSON (deserializas cuando lo necesites).
 
-**Opción C** – Tipos CLR (DTOs) serializables
-```csharp
-public class PreferenciasDto { public string Tema { get; set; } = "light"; }
+## Ejemplos prácticos
+- Updates parciales y columnas específicas (PATCH): uso de DTO o Dictionary, exclusión de PK/soft delete y mapeo flexible de nombres.
+- Controladores ASP.NET Core con CancellationToken.
 
-[Jsonb] public PreferenciasDto? Preferencias { get; set; }
-```
-- ✅ Con un `TypeHandler<PreferenciasDto>` puedes leer/escribir DTOs tipados.
+## Notas y buenas prácticas
+- Usa CancellationToken (`HttpContext.RequestAborted`) y propágalo.
+- Maneja jsonb explícitamente en escritura (NpgsqlDbType.Jsonb).
+- Asegura filtros parametrizados y sanitización al construir SQL dinámico.
+
+## Checklist rápido
+- DataSource registrado como Singleton; DbSession como Scoped.
+- TypeHandlers de Newtonsoft para JObject/JArray/JToken.
+- Atributos de mapeo correctos ([Table], [Column], [Key], [Ignore], [Jsonb]).
+- Propagación de CancellationToken en todos los métodos asíncronos.
+- Repositorios y ejecutor de funciones registrados en DI.
+
+## Historial de Cambios (resumen)
+- CancellationToken en API pública (cooperación con ASP.NET Core).
+- JSONB explícito en escritura (NpgsqlDbType.Jsonb) manteniendo lectura con TypeHandlers.
+- Ejecución genérica de funciones PostgreSQL mediante IDataFunctions.
+
+
+
 
 ---
 
-## 🔎 Ejemplos de uso
+# Anexo — Guía completa y detallada (profundización por temas)
 
-### Updates parciales y columnas específicas (nuevo)
+Este anexo amplía en profundidad cada tema del índice principal. Mantiene la estructura temática, añade explicaciones exhaustivas, ejemplos prácticos, firmas exactas, decisiones de diseño, gotchas, FAQ, rendimiento y seguridad. Todos los fragmentos reflejan el código actual del repositorio.
 
-- Método: `Task<bool> UpdateSetAsync(IDbSession session, object id, object patch, CancellationToken ct = default)`
-- Genera `SET` únicamente con las propiedades presentes en `patch` (objeto o `Dictionary<string,object?>`).
-- Aplica whitelist por `EntityMap` (propiedad, `snake_case` o `[Column]`); ignora campos no válidos.
-- Excluye siempre la PK y la columna de soft delete.
-- Maneja correctamente columnas `jsonb` (usando `NpgsqlDbType.Jsonb`).
+Contenido del anexo
+- Conceptos y objetivos del micro ORM
+- Infraestructura de acceso a datos: DbSession
+  - Ciclo de vida, transacciones, disposiciones
+  - Firmas exactas e invariantes
+  - Patrones de uso en ASP.NET Core
+  - Errores comunes y troubleshooting
+- Repositorio genérico DataMicroOrmRepository<T>
+  - Contrato (IDataMicroOrm<T>) con firmas exactas
+  - Inserción, actualización, borrado (soft/duro)
+  - Lectura: GetById/GetAll, orden, filtros y paginación
+  - UpdateSet (parches parciales y columnas específicas)
+  - Generación de SQL segura (whitelist/alias/quoting)
+  - Ejemplos end-to-end
+- Atributos de mapeo y convenciones (Attributes.cs + EntityMap)
+  - [Table], [Key], [ExplicitKey], [Computed], [Write], [Column], [SoftDelete], [Jsonb]
+  - Reglas de escritura y selección
+  - Detección de soft delete y nombres convencionales
+- JSONB con Newtonsoft.Json y Dapper
+  - Handlers para JToken/JObject/JArray (lectura)
+  - Escritura explícita como jsonb
+  - Modelado con DTOs tipados vs dinámicos
+- Paginación y conteo: Page<T>, CountAsync, PageAsync
+- Validación de modelos: [Required], [StringLength] y ModelValidator
+- Ejecución genérica de funciones PostgreSQL (IDataFunctions)
+  - Escalares, conjuntos (TABLE/SETOF) y void
+  - Normalización de parámetros
+- Seguridad, rendimiento y buenas prácticas
+  - Cancelación (CancellationToken) en toda la pila
+  - Sanitización de columnas y parámetros
+  - Pooling, transacciones y aislamiento
+- Migraciones y evolución de esquemas
+- Pruebas (ideas, patrones de test)
+- FAQ (preguntas frecuentes)
+- Guía de resolución de problemas (Troubleshooting)
+
+
+## Conceptos y objetivos del micro ORM
+
+MicroOrmGesg busca el equilibrio entre:
+- Control explícito del SQL (Dapper) y
+- Conveniencias típicas de un ORM (mapeo de entidades, CRUD genérico, paginación, filtros, soft delete, JSONB),
+con un coste cognitivo y de mantenimiento reducido.
+
+Decisiones clave:
+- Mapeo por convención con posibilidad de anotar excepciones por atributos.
+- Seguridad ante inyecciones a través de parámetros y whitelists de columnas.
+- Compatibilidad nativa con PostgreSQL (Npgsql) y JSONB (Newtonsoft.Json + Dapper).
+- APIs explícitas que propagan CancellationToken.
+
+
+## Infraestructura de acceso a datos: DbSession
+
+DbSession encapsula una única conexión y una transacción opcional por scope (generalmente una petición HTTP en ASP.NET Core). Implementa IDisposable e IAsyncDisposable para liberar recursos de forma segura.
+
+Firmas exactas (IDbSession):
+```csharp
+public interface IDbSession : IAsyncDisposable, IDisposable
+{
+    NpgsqlConnection? Connection { get; }
+    NpgsqlTransaction? Transaction { get; }
+
+    Task<NpgsqlConnection> OpenAsync(CancellationToken ct = default);
+    Task BeginTransactionAsync(IsolationLevel isolation = IsolationLevel.ReadCommitted, CancellationToken ct = default);
+    Task CommitAsync(CancellationToken ct = default);
+    Task RollbackAsync(CancellationToken ct = default);
+    void Close();
+}
+```
+
+Comportamiento y ciclo de vida (DbSession.cs):
+- OpenAsync abre la conexión desde NpgsqlDataSource (pool). Si ya está abierta, reutiliza.
+- BeginTransactionAsync inicia una transacción (única por scope) y lanza si ya hay una activa.
+- CommitAsync confirma y libera la transacción; RollbackAsync revierte si existe, y libera.
+- Close cierra y dispone la conexión si está abierta; es opcional llamarlo manualmente.
+- Dispose/DisposeAsync liberan transacción y conexión; el contenedor DI suele gestionarlo al final del scope.
+
+Buenas prácticas:
+- Registrar NpgsqlDataSource como Singleton y DbSession como Scoped.
+- Abrir conexión lo más tarde posible, cerrar/liberar al terminar.
+- En escenarios con alta concurrencia, preferir una transacción por operación lógica (unidad de trabajo) y evitar transacciones de larga duración.
+
+Patrón de uso (servicio):
+```csharp
+public sealed class PersonasService
+{
+    private readonly IDbSession _db;
+    public PersonasService(IDbSession db) => _db = db;
+
+    public async Task CrearAsync(string nombre, CancellationToken ct)
+    {
+        await _db.OpenAsync(ct);
+        await _db.BeginTransactionAsync(ct: ct);
+        try
+        {
+            const string sql = "insert into personas(nombre) values (@nombre)";
+            await _db.Connection!.ExecuteAsync(new CommandDefinition(sql, new { nombre }, _db.Transaction, cancellationToken: ct));
+            await _db.CommitAsync(ct);
+        }
+        catch
+        {
+            await _db.RollbackAsync(ct);
+            throw;
+        }
+    }
+}
+```
+
+Errores comunes y cómo evitarlos:
+- InvalidOperationException: "La sesión está cerrada. Llama a OpenAsync() primero." → Asegúrate de invocar OpenAsync antes de usar Connection/Transaction.
+- "Ya existe una transacción activa." → No anides transacciones con la misma DbSession; crea un scope adicional si necesitas otra unidad transaccional.
+- ObjectDisposedException(nameof(DbSession)) → No uses la instancia después de Dispose/DisposeAsync.
+
+
+## Repositorio genérico DataMicroOrmRepository<T>
+
+Contrato (Interfaces/IDataMicroOrm.cs):
+```csharp
+public interface IDataMicroOrm<T> where T : class
+{
+    Task<T?> GetByIdAsync(IDbSession session, object id, CancellationToken ct = default);
+    Task<List<T>> GetAllAsync(
+        IDbSession session,
+        bool includeSoftDeleted = false,
+        string? orderBy = null,
+        SortDirection dir = SortDirection.Asc,
+        int? limit = null,
+        int? offset = null,
+        string? filterField = null,
+        object? filterValue = null,
+        StringFilterMode stringMode = StringFilterMode.Equals,
+        bool forceLowerCase = false,
+        CancellationToken ct = default);
+
+    Task<int> CountAsync(
+        IDbSession session,
+        bool includeSoftDeleted = false,
+        string? filterField = null,
+        object? filterValue = null,
+        StringFilterMode stringMode = StringFilterMode.Equals,
+        bool forceLowerCase = false,
+        CancellationToken ct = default);
+
+    Task<Page<T>> PageAsync(
+        IDbSession session,
+        int page,
+        int size,
+        bool includeSoftDeleted = false,
+        string? orderBy = null,
+        SortDirection dir = SortDirection.Asc,
+        string? filterField = null,
+        object? filterValue = null,
+        StringFilterMode stringMode = StringFilterMode.Equals,
+        bool forceLowerCase = false,
+        CancellationToken ct = default);
+
+    Task<int> InsertAsync(IDbSession session, T data, CancellationToken ct = default);
+    Task<object?> InsertAsyncReturnId(IDbSession session, T data, CancellationToken ct = default);
+    Task<bool> UpdateAsync(IDbSession session, T data, CancellationToken ct = default);
+    Task<bool> UpdateSetAsync(IDbSession session, object id, object patch, CancellationToken ct = default);
+    Task<bool> DeleteAsync(IDbSession session, object id, CancellationToken ct = default);
+}
+```
+
+Resumen de comportamiento (DataMicroOrmRepository.cs):
+- GetByIdAsync: SELECT por PK con alias "PropiedadCSharp" para mapeo limpio.
+- GetAllAsync: soporta soft delete (WHERE eliminado=false), ordenación por propiedad o snake_case, filtros seguros por columna whitelisteada, y paginado con limit/offset parametrizados.
+- InsertAsync / InsertAsyncReturnId: generan columnas/valores conforme WritableProps. ReturnId usa RETURNING PK.
+- UpdateAsync: SET para columnas escribibles, WHERE por PK, excluye Computed/Write(false)/soft delete/PK implícita.
+- UpdateSetAsync: parches parciales con whitelist de columnas; permite nombres C#, snake_case o [Column]; excluye PK y soft delete; trata JSONB como tal.
+- DeleteAsync: si hay soft delete, UPDATE a true; si no, DELETE físico.
+- CountAsync y PageAsync: reutilizan filtros y reglas de whitelist/soft delete.
+
+Detalles de seguridad y generación de SQL:
+- Todas las variables dinámicas viajan como parámetros Dapper/ICustomQueryParameter.
+- Las columnas dinámicas (orden/filtro/update-set) se resuelven con ResolveColumn y whitelists basadas en EntityMap.
+- Identificadores quotados con Naming.Quote para evitar colisiones y respetar mayúsculas/minúsculas.
 
 Ejemplos:
-
 ```csharp
-// 1) Objeto anónimo / DTO
-var ok1 = await repo.UpdateSetAsync(db, id: 10, new { Nombre = "Alice", Usuario = "alice2" }, ct);
-
-// 2) snake_case o nombre exacto de [Column]
-var ok2 = await repo.UpdateSetAsync(db, 10, new { password_hash = "xxx" }, ct);
-
-// 3) Diccionario (por ejemplo, desde un payload dinámico)
-var patch = new Dictionary<string, object?>
-{
-    ["Nombre"] = "Alice Doe",
-    ["preferencias"] = JObject.FromObject(new { tema = "dark" }) // jsonb
-};
-var ok3 = await repo.UpdateSetAsync(db, 10, patch, ct);
-```
-
-Notas:
-- Si ninguna columna es válida tras aplicar la whitelist, lanza `InvalidOperationException`.
-- Los nombres de campo admiten: nombre de propiedad C#, su `snake_case` o el nombre exacto definido en `[Column]` (case-insensitive).
-
-### Paginación con total (PageAsync) y conteo (CountAsync)
-
-- Ambos métodos reutilizan la misma lógica de filtros/WHERE que `GetAllAsync` (soft delete, filtros por `filterField`/`filterValue`, `StringFilterMode`, `forceLowerCase`).
-- `PageAsync` devuelve un objeto con `{ Items, Total, Page, Size }`.
-
-```csharp
-// Total con los mismos filtros
-var total = await repo.CountAsync(db,
-    includeSoftDeleted: false,
-    filterField: "Nombre",
-    filterValue: "ali",
-    stringMode: StringFilterMode.Contains,
-    forceLowerCase: true,
-    ct);
-
-// Página 2 de tamaño 10, ordenando por "Usuario" descendente
+// Listado paginado con filtro contiene (case-insensitive) y orden por propiedad
 var page = await repo.PageAsync(db,
     page: 2,
     size: 10,
@@ -490,1035 +430,428 @@ var page = await repo.PageAsync(db,
     forceLowerCase: true,
     ct: ct);
 
-// page.Items -> List<T>
-// page.Total -> int (COUNT(*))
-// page.Page  -> número de página (1-based)
-// page.Size  -> tamaño de página
-```
-
-```csharp
-// GetById
-var usuario = await repo.GetByIdAsync(db, 123, ct);
-
-// GetAll con orden y paginación
-var page = await repo.GetAllAsync(db, includeSoftDeleted: false, orderBy: "Usuario",
-                                  dir: SortDirection.Desc, limit: 20, offset: 0, ct: ct);
-
-// Insert devolviendo id
-var id = await repo.InsertAsyncReturnId(db, new Usuarios {
+// Inserción devolviendo id
+var id = await repo.InsertAsyncReturnId(db, new Usuario {
     Nombre = "Alice",
     Usuario = "alice",
     PasswordHash = "xxx",
     Preferencias = JObject.FromObject(new { tema = "dark", notificaciones = true })
 }, ct);
 
-// Update
-usuario!.Nombre = "Alice Doe";
-usuario.Preferencias!["tema"] = "light";
-var ok = await repo.UpdateAsync(db, usuario, ct);
-
-// Delete (soft si existe, si no, delete físico)
-var deleted = await repo.DeleteAsync(db, id!, ct);
+// PATCH parcial por columnas específicas (C# o snake_case o [Column])
+var ok = await repo.UpdateSetAsync(db, id!, new { password_hash = "x" }, ct);
 ```
 
----
 
-## 🧯 Notas y gotchas
+## Atributos de mapeo y convenciones (Attributes.cs + EntityMap)
 
-- `InsertAsyncReturnId` devuelve `object?` por si tu PK es `int`, `long`, `Guid`, etc.
-- Si un nombre de propiedad supera 63 chars (raro), el alias en `SELECT` se trunca.
-- `[Column("nombre_en_bd")]` fuerza el nombre exacto de la columna.
-- `ORDER BY` ignora campos no válidos (whitelist).
-
----
-
-## ✅ Checklist rápido
-
-- [ ] Registré `IDbSession` y `NpgsqlDataSource`.
-- [ ] Registré los **TypeHandlers** de Newtonsoft para Dapper.
-- [ ] Mis modelos usan `[Table]`, `[Key]`, `[Column]` donde corresponde.
-- [ ] Para `jsonb`, uso `[Jsonb]` y tipos `JObject/JArray/JToken` o `string` según convenga.
-- [ ] Commit/Rollback con `db.BeginTransactionAsync()` en mis controladores/servicios.
-
-
-# MicroOrmGesg 1.1 — Documentación actualizada
-
-Esta versión amplía las capacidades de **GetAllAsync** para permitir filtros dinámicos por campo y valor, con soporte para diferentes tipos de datos y modos de búsqueda en campos string.
-
----
-
-## 🚀 Cambios principales respecto a 1.0
-
-- **Nuevo filtrado dinámico en `GetAllAsync`**:
-  - Parámetros opcionales `filterField` y `filterValue`.
-  - Detección de tipo del valor para construir el filtro adecuado (`=`, `ILIKE`, etc.).
-  - Enum `StringFilterMode` para cadenas:
-    - `Equals` (igualdad exacta, por defecto).
-    - `Contains` (contiene, `ILIKE '%valor%'`).
-    - `StartsWith` (comienza con, `ILIKE 'valor%'`).
-    - `EndsWith` (termina con, `ILIKE '%valor'`).
-  - Protección contra inyecciones con *whitelist* de columnas (solo propiedades válidas o marcadas con `[Column]`).
-
----
-
-## 📦 Firma del método actualizada
-
+Atributos disponibles (resumen con comentarios):
 ```csharp
-Task<List<T>> GetAllAsync(
-    IDbSession session,
-    bool includeSoftDeleted = false,
-    string? orderBy = null,
-    SortDirection dir = SortDirection.Asc,
-    int? limit = null,
-    int? offset = null,
-    string? filterField = null,
-    object? filterValue = null,
-    StringFilterMode stringMode = StringFilterMode.Equals
-);
-```
-
----
-
-## 📋 Ejemplos de uso
-
-**1. Filtrado exacto por campo string:**
-```csharp
-var usuarios = await repo.GetAllAsync(db,
-    filterField: "Usuario",
-    filterValue: "alice");
-```
-
-**2. Filtrado por texto (contiene, case-insensitive):**
-```csharp
-var usuarios = await repo.GetAllAsync(db,
-    filterField: "nombre",
-    filterValue: "carla",
-    stringMode: StringFilterMode.Contains);
-```
-
-**3. Filtrado por campo con `[Column]`:**
-```csharp
-var usuarios = await repo.GetAllAsync(db,
-    filterField: "password_hash",
-    filterValue: "xyz");
-```
-
-**4. Combinado con orden y paginación:**
-```csharp
-var usuarios = await repo.GetAllAsync(db,
-    includeSoftDeleted: false,
-    orderBy: "nombre",
-    dir: SortDirection.Desc,
-    limit: 20,
-    offset: 0,
-    filterField: "activo",
-    filterValue: true);
-```
-
----
-
-## ⚙️ Implementación de seguridad para filtros
-
-El método `ResolveColumn` asegura que solo se pueda filtrar por columnas conocidas en el modelo:
-
-```csharp
-private static string? ResolveColumn(EntityMap map, string field)
+[AttributeUsage(AttributeTargets.Class)]
+public sealed class TableAttribute : Attribute
 {
-    var f = field.Trim();
-
-    // 1) Propiedad C#
-    var byProp = map.Props.FirstOrDefault(p =>
-        string.Equals(p.Name, f, StringComparison.OrdinalIgnoreCase));
-    if (byProp != null)
-        return byProp.GetCustomAttribute<ColumnAttribute>()?.Name ?? Naming.ToSnake(byProp.Name);
-
-    // 2) snake_case
-    var bySnake = map.Props.FirstOrDefault(p =>
-        string.Equals(Naming.ToSnake(p.Name), f, StringComparison.OrdinalIgnoreCase));
-    if (bySnake != null)
-        return bySnake.GetCustomAttribute<ColumnAttribute>()?.Name ?? Naming.ToSnake(bySnake.Name);
-
-    // 3) Nombre exacto en [Column]
-    var byColumnAttr = map.Props.FirstOrDefault(p =>
-        string.Equals(p.GetCustomAttribute<ColumnAttribute>()?.Name, f, StringComparison.OrdinalIgnoreCase));
-    return byColumnAttr?.GetCustomAttribute<ColumnAttribute>()?.Name;
+    public TableAttribute(string name) => Name = name; // Nombre de tabla (sin quotes)
+    public string Name { get; }
+    public string? Schema { get; init; }              // Opcional: esquema
 }
+
+[AttributeUsage(AttributeTargets.Property)]
+public sealed class KeyAttribute : Attribute {}          // PK autoincrement (serial/identity)
+[AttributeUsage(AttributeTargets.Property)]
+public sealed class ExplicitKeyAttribute : Attribute {}  // PK manual (no generada por la BD)
+[AttributeUsage(AttributeTargets.Property)]
+public sealed class ComputedAttribute : Attribute {}     // Solo lectura (excluir en INSERT/UPDATE)
+[AttributeUsage(AttributeTargets.Property)]
+public sealed class SoftDeleteAttribute : Attribute {}   // Marca la columna booleana de soft delete
+[AttributeUsage(AttributeTargets.Property)]
+public sealed class WriteAttribute : Attribute           // Para excluir columnas en writes
+{
+    public bool Include { get; init; } = true;
+}
+[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
+public sealed class ColumnAttribute : Attribute          // Nombre exacto de columna
+{
+    public ColumnAttribute(string name) { Name = name; }
+    public string Name { get; }
+}
+[AttributeUsage(AttributeTargets.Property)]
+public sealed class JsonbAttribute : Attribute { }       // Fuerza tratamiento jsonb
 ```
 
----
+Convenciones aplicadas por EntityMap:
+- Tabla: [Table(Name, Schema)] o nombre de clase → snake_case. Se quita por partes: "schema"."tabla".
+- Columnas: [Column] o snake_case de la propiedad.
+- SELECT: "columna_real" AS "PropiedadCSharp" con alias seguro de 63 caracteres.
+- WritableProps: excluye Computed, Write(false), PK implícita (permite ExplicitKey), y columna de soft delete.
+- Soft delete: detecta [SoftDelete] o nombres convencionales "eliminado"/"is_deleted" con tipo bool/bool? y guarda nombre real.
 
-## 📌 Notas y buenas prácticas
-
-- Si el tipo de `filterValue` es `string`, el modo de comparación se controla con `stringMode`.
-- Si es `int`, `bool`, `DateTime`, etc., siempre se usará `=`.
-- La *whitelist* evita inyecciones SQL verificando el campo contra la definición del modelo.
-- Compatible con el resto de características de `GetAllAsync`: soft delete, ordenación y paginación.
-
----
-
-## ✅ Checklist rápido (añadido para 1.1)
-
-- [ ] Usar siempre `filterField` con nombres de propiedad o `[Column]` válidos.
-- [ ] Definir `[Column]` en propiedades que no coincidan con el nombre real de la columna.
-- [ ] Probar filtros con todos los `StringFilterMode`.
-- [ ] Combinar filtros con `orderBy`, `limit` y `offset` para optimizar consultas grandes.
-
-
-
-
----
-
-## 🧱 Implementación completa (Repositorio + DI + Servicio/Controlador con PATCH)
-
-A continuación, un ejemplo de punta a punta mostrando cómo implementar y usar `UpdateSetAsync` en un proyecto ASP.NET Core.
-
-### 1) Entidad de ejemplo
+Ejemplo de entidad típica:
 ```csharp
-using Newtonsoft.Json.Linq;
-using MicroOrmGesg;
-
 [Table("usuarios", Schema = "public")]
-public sealed class Usuarios
+public sealed class Usuario
 {
     [Key] public int Id { get; set; }
-
     public string Nombre { get; set; } = default!;
     public string Usuario { get; set; } = default!;
-
-    [Column("password_hash")]
-    public string PasswordHash { get; set; } = default!;
-
-    [SoftDelete]
-    public bool Eliminado { get; set; }
-
+    [Column("password_hash")] public string PasswordHash { get; set; } = default!;
+    [SoftDelete] public bool Eliminado { get; set; }
     [Jsonb] public JObject? Preferencias { get; set; }
 }
 ```
 
-### 2) Registro en DI (repositorio e infraestructura)
+
+## JSONB con Newtonsoft.Json y Dapper
+
+Type handlers (Utils/DapperNewtonsoftHandlers.cs):
+- JTokenTypeHandler, JObjectTypeHandler, JArrayTypeHandler.
+- Parse deserializa desde cadena JSON; SetValue serializa y marca NpgsqlDbType.Jsonb.
+
+Registro recomendado:
 ```csharp
-// Program.cs / Startup.cs
-services.AddScoped<IDbSession, DbSession>();
-
-// Puedes registrar directamente el repositorio genérico para la entidad
-services.AddScoped<MicroOrmGesg.Interfaces.IDataMicroOrm<Usuarios>, MicroOrmGesg.Repository.DataMicroOrmRepository<Usuarios>>();
-
-// TypeHandlers de Newtonsoft para Dapper (lectura de json)
 SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JObjectTypeHandler());
 SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JArrayTypeHandler());
 SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JTokenTypeHandler());
 ```
 
-Opcionalmente, si prefieres un repositorio concreto para añadir métodos específicos, crea una clase vacía que herede:
+Escritura explícita como jsonb:
+- En INSERT/UPDATE, cuando la propiedad es JToken/JObject/JArray o está marcada con [Jsonb], se serializa a string y se usa un ICustomQueryParameter que crea un NpgsqlParameter con NpgsqlDbType.Jsonb, garantizando el tipo jsonb en PostgreSQL.
+
+Ventajas:
+- Lectura: Dapper + handlers devuelven directamente objetos JObject/JArray/JToken.
+- Escritura: robustez independientemente de conversiones implícitas del proveedor.
+
+Modelado de propiedades jsonb:
+- Dinámico: JObject/JArray/JToken (mutables, flexibles).
+- String: almacenar JSON como texto y deserializar bajo demanda.
+- DTO tipados: posible con type handlers personalizados si se desea des/serialización automática.
+
+
+## Paginación y conteo
+
+Tipo Page<T> (Utils/Page.cs):
 ```csharp
-using MicroOrmGesg.Repository;
-using MicroOrmGesg.Interfaces;
-
-public sealed class UsuariosRepository : DataMicroOrmRepository<Usuarios>, IDataMicroOrm<Usuarios>
+public sealed class Page<T>
 {
-    // Métodos específicos si los necesitas…
-}
-```
-Y registra `UsuariosRepository` en lugar del genérico.
-
-### 3) DTO para PATCH (opcional)
-```csharp
-public sealed class UsuarioPatchDto
-{
-    public string? Nombre { get; set; }
-    public string? Usuario { get; set; }
-    public string? PasswordHash { get; set; }
-    public JObject? Preferencias { get; set; } // jsonb
-}
-```
-
-### 4) Servicio de dominio (usa IDbSession + repositorio)
-```csharp
-using MicroOrmGesg.Interfaces;
-
-public sealed class UsuariosService
-{
-    private readonly IDbSession _db;
-    private readonly IDataMicroOrm<Usuarios> _repo;
-
-    public UsuariosService(IDbSession db, IDataMicroOrm<Usuarios> repo)
-    {
-        _db = db;
-        _repo = repo;
-    }
-
-    public async Task<bool> PatchAsync(int id, object patch, CancellationToken ct)
-    {
-        await _db.OpenAsync(ct);
-        await _db.BeginTransactionAsync(ct: ct);
-        try
-        {
-            var ok = await _repo.UpdateSetAsync(_db, id, patch, ct);
-            await _db.CommitAsync(ct);
-            return ok;
-        }
-        catch
-        {
-            await _db.RollbackAsync(ct);
-            throw;
-        }
-    }
+    public required List<T> Items { get; init; }
+    public required int Total { get; init; }
+    [JsonProperty("Page")] public required int PageNumber { get; init; }
+    public required int Size { get; init; }
 }
 ```
 
-### 5) Controlador: endpoints con PATCH usando DTO o Dictionary
+- CountAsync: SELECT count(*) con mismos filtros/soft delete.
+- PageAsync: calcula offset, delega en GetAllAsync y CountAsync, y empaqueta en Page<T>.
+- Filtros consistentes con StringFilterMode y forceLowerCase para case-insensitive.
+
+
+## Validación de modelos
+
+Atributos:
+- [Required(Message = "...")]: rechaza null y, en string, vacío/espacios.
+- [StringLength(min, max, Message = "...")]: límites para string; si min/max=0, no aplica ese límite.
+
+Uso del validador:
 ```csharp
-using Microsoft.AspNetCore.Mvc;
-using Newtonsoft.Json.Linq;
-
-[ApiController]
-[Route("api/[controller]")]
-public sealed class UsuariosController : ControllerBase
+var errores = ModelValidator.Validate(dto);
+if (errores.Any())
 {
-    private readonly UsuariosService _service;
-    private readonly IDbSession _db; // Para lecturas posteriores si quieres
-    private readonly MicroOrmGesg.Interfaces.IDataMicroOrm<Usuarios> _repo;
-
-    public UsuariosController(UsuariosService service, IDbSession db, MicroOrmGesg.Interfaces.IDataMicroOrm<Usuarios> repo)
-    {
-        _service = service;
-        _db = db;
-        _repo = repo;
-    }
-
-    // PATCH con DTO tipado
-    [HttpPatch("{id:int}")]
-    public async Task<IActionResult> PatchDto(int id, [FromBody] UsuarioPatchDto dto, CancellationToken ct)
-    {
-        var ok = await _service.PatchAsync(id, dto, ct);
-        if (!ok) return NotFound();
-
-        await _db.OpenAsync(ct);
-        var updated = await _repo.GetByIdAsync(_db, id, ct);
-        return Ok(updated);
-    }
-
-    // PATCH con Dictionary (flexible)
-    [HttpPatch("{id:int}/dynamic")]
-    public async Task<IActionResult> PatchDynamic(int id, [FromBody] Dictionary<string, object?> patch, CancellationToken ct)
-    {
-        // Ejemplo: puedes enviar keys como "Nombre", "password_hash" o "preferencias" (jsonb)
-        var ok = await _service.PatchAsync(id, patch, ct);
-        if (!ok) return NotFound();
-
-        await _db.OpenAsync(ct);
-        var updated = await _repo.GetByIdAsync(_db, id, ct);
-        return Ok(updated);
-    }
+    // Manejar errores (PropertyName + Message)
 }
-```
-
-Notas importantes:
-- Los nombres de campos aceptados en `patch` son el nombre de propiedad C#, su `snake_case`, o el nombre exacto definido en `[Column]` (case-insensitive).
-- La PK y la columna de soft delete se excluyen automáticamente del `SET`.
-- Para valores `jsonb`, puedes pasar `JObject/JArray/JToken` o cualquier objeto serializable (siempre que marques la propiedad con `[Jsonb]`).
-
-# Configuración de MicroOrmGesg 1.0
-
-```
-dotnet build --configuration Release
-```
-
----
-
-# Cambios: CancellationToken en API pública (1.2)
-
-A partir de la versión 1.2:
-- Todas las APIs públicas del repositorio (`GetByIdAsync`, `GetAllAsync`, `InsertAsync`, `InsertAsyncReturnId`, `UpdateAsync`, `DeleteAsync`) aceptan `CancellationToken ct = default`.
-- Se propaga el `ct` a `DbSession.OpenAsync`, `BeginTransactionAsync`, y a las operaciones Dapper usando `CommandDefinition` (para cancelación cooperativa).
-- Esto mejora la cooperación con ASP.NET Core (`HttpContext.RequestAborted`) y evita trabajo innecesario ante cancelaciones.
-
-Ejemplo en controlador ASP.NET Core:
-```csharp
-[HttpGet("{id:int}")]
-public async Task<IActionResult> Get(int id, CancellationToken ct)
-{
-    await _db.OpenAsync(ct);
-    var entity = await _repo.GetByIdAsync(_db, id, ct);
-    return entity is null ? NotFound() : Ok(entity);
-}
-```
-
----
-
-# Cambios: JSONB explícito en escritura (1.3)
-
-A partir de la versión 1.3:
-
-3) JSONB explícito en escritura
-- Para propiedades marcadas con `[Jsonb]` o de tipo `JToken`/`JObject`/`JArray`, se usa `NpgsqlParameter` con `NpgsqlDbType.Jsonb` en operaciones de escritura (INSERT/UPDATE) para no depender de conversiones implícitas de proveedor.
-- Se mantienen los TypeHandlers (Newtonsoft + Dapper) para lectura y compatibilidad hacia atrás, de modo que los `SELECT` sigan deserializando automáticamente a `JObject`/`JArray`/`JToken`.
-
-Ejemplo (resumen) del manejo de parámetros en escritura:
-```csharp
-var jsonString = value != null ? JsonConvert.SerializeObject(value) : null;
-var np = new NpgsqlParameter(paramName, NpgsqlDbType.Jsonb)
-{
-    Value = (object?)jsonString ?? DBNull.Value
-};
-dp.Add(paramName, np);
-```
-
-Nota: Si ya registraste los `TypeHandler` de `JObject`/`JArray`/`JToken`, no necesitas cambios para lectura; esta versión únicamente hace explícito el tipo `jsonb` en escritura para mayor robustez.
-
----
-
-
-# DbSession — Gestión de Conexiones y Transacciones en PostgreSQL
-
-`DbSession` es una clase que encapsula la gestión de una conexión única y opcionalmente una transacción para cada petición o unidad de trabajo.  
-Está diseñada para **PostgreSQL** usando `NpgsqlDataSource` (pool de conexiones de alto rendimiento) y pensada para funcionar en entornos con **Inyección de Dependencias (DI)** en ASP.NET Core.
-
----
-
-## Características principales
-- **Scoped por request**: una única conexión y transacción por cada petición HTTP (si lo registras como `Scoped`).
-- **Compatibilidad async/sync**: expone métodos asíncronos y síncronos para mayor flexibilidad.
-- **Control explícito de transacciones**: `BeginTransactionAsync`, `CommitAsync`, `RollbackAsync`.
-- **Liberación segura de recursos**: implementa `IDisposable` e `IAsyncDisposable`.
-- **Integración directa con `Npgsql`**: acceso completo a funcionalidades específicas de PostgreSQL.
-
----
-
-## Registro en el contenedor de servicios (Scoped)
-
-En tu `Program.cs` o `Startup.cs`, añade:
-
-```csharp
-// Registrar el DataSource como Singleton (pool de conexiones)
-services.AddSingleton(sp =>
-{
-    var cs = Configuration.GetConnectionString("ServidorSQL") ?? string.Empty;
-    var dsBuilder = new NpgsqlDataSourceBuilder(cs);
-    dsBuilder.UseNodaTime(); 
-    return dsBuilder.Build(); 
-});
-
-// Registrar DbSession como Scoped (nueva instancia por request)
-services.AddScoped<IDbSession, DbSession>();
-```
-
----
-
-## Ejemplo de uso en un servicio
-
-```csharp
-public class PersonaService
-{
-    private readonly IDbSession _db;
-
-    public PersonaService(IDbSession db)
-    {
-        _db = db;
-    }
-
-    public async Task CrearPersonaAsync(string nombre, CancellationToken ct = default)
-    {
-        // Abrir conexión y comenzar transacción
-        await _db.OpenAsync(ct);
-        await _db.BeginTransactionAsync(ct: ct);
-
-        try
-        {
-            var sql = "INSERT INTO personas(nombre) VALUES (@nombre)";
-            await _db.Connection!.ExecuteAsync(sql, new { nombre }, _db.Transaction);
-
-            // Confirmar transacción
-            await _db.CommitAsync(ct);
-        }
-        catch
-        {
-            // Deshacer transacción si hay error
-            await _db.RollbackAsync(ct);
-            throw;
-        }
-    }
-}
-```
-
----
-
-## Ejemplo de uso en un controlador
-
-```csharp
-[ApiController]
-[Route("api/[controller]")]
-public class PersonasController : ControllerBase
-{
-    private readonly PersonaService _personaService;
-
-    public PersonasController(PERSONAService personaService)
-    {
-        _personaService = personaService;
-    }
-
-    [HttpPost]
-    public async Task<IActionResult> Crear([FromBody] string nombre)
-    {
-        await _personaService.CrearPersonaAsync(nombre);
-        return Ok(new { message = "Persona creada correctamente" });
-    }
-}
-```
-
----
-
-## Métodos disponibles en `DbSession`
-
-| Método                       | Descripción |
-|------------------------------|-------------|
-| `Task<NpgsqlConnection> OpenAsync()` | Abre o reutiliza una conexión desde el pool. |
-| `Task BeginTransactionAsync()` | Inicia una transacción en la conexión actual. |
-| `Task CommitAsync()`         | Confirma la transacción activa. |
-| `Task RollbackAsync()`       | Revierte la transacción activa. |
-| `void Close()`               | Cierra manualmente la conexión. |
-| `Dispose()` / `DisposeAsync()` | Libera recursos (transacción y conexión). |
-
----
-
-## MicroOrmGesg – Repositorio Genérico (Dapper + Npgsql, Newtonsoft)
-
-Guía práctica para usar el repositorio genérico **`DataMicroOrmRepository<T>`** con PostgreSQL, soportando **soft delete**, **paginación/ordenación**, y **campos `jsonb`** con **Newtonsoft.Json**.
-
----
-
-## 📦 Instalación y registro (startup)
-
-Asegúrate de tener Npgsql y Dapper configurados y el `IDbSession` registrado.
-
-```csharp
-// Program.cs / Startup.cs
-services.AddNpgsqlDataSource(Configuration.GetConnectionString("ServidorSQL")!, b =>
-{
-    b.EnableRetryOnFailure();
-    b.UseNodaTime();
-});
-
-services.AddScoped<IDbSession, DbSession>(); // tu implementación
-
-// Dapper type handlers para JSON (Newtonsoft)
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JObjectTypeHandler());
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JArrayTypeHandler());
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JTokenTypeHandler());
-```
-> Si no tienes `AddNpgsqlDataSource`, crea el `NpgsqlDataSource` manualmente y regístralo como singleton.
-
----
-
-## 🧩 Interfaz del repositorio
-
-```csharp
-Task<T?> GetByIdAsync(IDbSession session, object id, CancellationToken ct = default);
-
-Task<List<T>> GetAllAsync(
-    IDbSession session,
-    bool includeSoftDeleted = false,
-    string? orderBy = null,
-    SortDirection dir = SortDirection.Asc,
-    int? limit = null,
-    int? offset = null,
-    string? filterField = null,
-    object? filterValue = null,
-    StringFilterMode stringMode = StringFilterMode.Equals,
-    bool forceLowerCase = false,
-    CancellationToken ct = default);
-
-Task<int> CountAsync(
-    IDbSession session,
-    bool includeSoftDeleted = false,
-    string? filterField = null,
-    object? filterValue = null,
-    StringFilterMode stringMode = StringFilterMode.Equals,
-    bool forceLowerCase = false,
-    CancellationToken ct = default);
-
-Task<Page<T>> PageAsync(
-    IDbSession session,
-    int page,
-    int size,
-    bool includeSoftDeleted = false,
-    string? orderBy = null,
-    SortDirection dir = SortDirection.Asc,
-    string? filterField = null,
-    object? filterValue = null,
-    StringFilterMode stringMode = StringFilterMode.Equals,
-    bool forceLowerCase = false,
-    CancellationToken ct = default);
-
-Task<int> InsertAsync(IDbSession session, T data, CancellationToken ct = default);
-Task<object?> InsertAsyncReturnId(IDbSession session, T data, CancellationToken ct = default);
-Task<bool> UpdateAsync(IDbSession session, T data, CancellationToken ct = default);
-Task<bool> UpdateSetAsync(IDbSession session, object id, object patch, CancellationToken ct = default);
-Task<bool> DeleteAsync(IDbSession session, object id, CancellationToken ct = default);
-```
-
-### Comportamiento de cada método
-
-- **`GetByIdAsync`**: `SELECT` por **clave primaria**. El `SELECT` usa alias de propiedad para que Dapper mapee limpio.
-- **`GetAllAsync`**:
-    - Filtra automáticamente por **soft delete** si existe (`WHERE eliminado = false`).
-    - **Ordenación** por nombre de **propiedad** o por `snake_case` (whitelist; `OrdinalIgnoreCase` en `snake_case`).
-    - **Paginación** con `limit` y `offset` parametrizados.
-- **`InsertAsync`**: Inserta con columnas **escribibles** (excluye `[Computed]`, `[Key]` salvo `[ExplicitKey]`, y la columna de soft delete). Devuelve filas afectadas.
-- **`InsertAsyncReturnId`**: Inserta y devuelve el **id** generado con `RETURNING <pk>`.
-- **`UpdateAsync`**: Actualiza por **PK**. **Excluye la columna de soft delete** en `SET`. Devuelve `true` si afectó ≥ 1 fila.
-- **`UpdateSetAsync` (nuevo)**: Actualiza por **PK** generando `SET` solo con las propiedades presentes en `patch` (objeto anónimo/DTO o `Dictionary<string,object?>`). Aplica una whitelist por `EntityMap` para evitar columnas inválidas y excluye siempre la columna de **soft delete** y la **PK**.
-- **`DeleteAsync`**:
-    - Si hay soft delete → `UPDATE ... SET eliminado = true`.
-    - Si no hay → `DELETE FROM ...`.
-
----
-
-## 🏷️ Atributos disponibles
-
-Colócalos en tu proyecto (namespace `MicroOrmGesg`) y úsalos en tus modelos.
-
-```csharp
-[AttributeUsage(AttributeTargets.Class)]
-public sealed class TableAttribute : Attribute
-{
-    public TableAttribute(string name) => Name = name;
-    public string Name { get; }
-    public string? Schema { get; init; }
-}
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class KeyAttribute : Attribute {}                 // PK autoincrement (identity/serial)
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class ExplicitKeyAttribute : Attribute {}         // PK manual (no generado por DB)
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class ComputedAttribute : Attribute {}            // Solo lectura (excluir en INSERT/UPDATE)
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class SoftDeleteAttribute : Attribute {}          // Marca la columna booleana de soft delete
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class WriteAttribute : Attribute { public bool Include { get; init; } = true; } // excluir en writes
-
-[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
-public sealed class ColumnAttribute : Attribute
-{
-    public ColumnAttribute(string name) { Name = name; }
-    public string Name { get; }
-}
-
-[AttributeUsage(AttributeTargets.Property)]
-public sealed class JsonbAttribute : Attribute {}               // Fuerza tratamiento como jsonb
-```
-
-### Ejemplo de modelo
-
-```csharp
-using Newtonsoft.Json.Linq;
-
-[Table("usuarios", Schema = "public")]
-public sealed class Usuarios
-{
-    [Key] public int Id { get; set; }
-
-    public string Nombre { get; set; } = default!;
-    public string Usuario { get; set; } = default!;
-
-    [Column("password_hash")]
-    public string PasswordHash { get; set; } = default!;
-
-    [SoftDelete]
-    public bool Eliminado { get; set; }
-
-    // JSONB (opción 1): objetos newtonsoft
-    [Jsonb] public JObject? Preferencias { get; set; }  // objeto o array
-    [Jsonb] public JToken?  Roles        { get; set; }  // flexible
-}
-```
-
-> Si la columna en DB no coincide con el nombre de la propiedad, usa `[Column("nombre_columna")]`.
-
----
-
-## 🧠 Convenciones del `EntityMap`
-
-- **Tabla**: `[Table(Name, Schema)]`. Si no hay, nombre de clase en `snake_case`. Quote por partes → `"schema"."tabla"`.
-- **Columnas**: por defecto `snake_case` de la propiedad, pero respeta **`[Column]`**.
-- **SELECT**: `columna_real AS "PropiedadCSharp"` para que Dapper mapee sin fricciones.
-- **WritableProps**: excluye `[Computed]`, `[Write(Include=false)]`, **PK** salvo `[ExplicitKey]`, y **soft delete** si existe.
-
----
-
-## 🧾 JSONB con Newtonsoft.Json
-
-### Escritura (INSERT/UPDATE)
-Si la propiedad es `JObject/JArray/JToken` **o** lleva `[Jsonb]`, el helper construye parámetros **`NpgsqlDbType.Jsonb`** y serializa con **`JsonConvert`**.
-
-```csharp
-private static DynamicParameters BuildWriteParameters<TModel>(EntityMap map, TModel data, bool includeKeyParam = false)
-{
-    var dp = new DynamicParameters();
-
-    foreach (var p in map.WritableProps)
-    {
-        var paramName = p.Name;
-        var value = p.GetValue(data);
-
-        bool isJsonLike =
-            p.GetCustomAttribute<JsonbAttribute>() != null ||
-            value is JObject || value is JArray || value is JToken;
-
-        if (isJsonLike)
-        {
-            var jsonString = value != null ? JsonConvert.SerializeObject(value) : null;
-            var np = new NpgsqlParameter(paramName, NpgsqlDbType.Jsonb)
-            {
-                Value = (object?)jsonString ?? DBNull.Value
-            };
-            dp.Add(paramName, np);
-        }
-        else
-        {
-            dp.Add(paramName, value);
-        }
-    }
-
-    if (includeKeyParam)
-    {
-        var keyParamName = map.KeyProperty.Name;
-        var keyVal = map.KeyProperty.GetValue(data);
-        dp.Add(keyParamName, keyVal);
-    }
-
-    return dp;
-}
-```
-
-### Lectura (SELECT)
-Registra **TypeHandlers** para que Dapper deserialice automáticamente a `JObject`/`JArray`/`JToken`:
-
-```csharp
-public sealed class JObjectTypeHandler : SqlMapper.TypeHandler<JObject?>
-{
-    public override JObject? Parse(object value)
-        => value is null || value is DBNull ? null : JsonConvert.DeserializeObject<JObject>(value.ToString()!);
-    public override void SetValue(IDbDataParameter parameter, JObject? value)
-        => parameter.Value = value is null ? DBNull.Value : JsonConvert.SerializeObject(value);
-}
-
-// Análogo para JArray y JToken…
-
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JObjectTypeHandler());
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JArrayTypeHandler());
-SqlMapper.AddTypeHandler(new MicroOrmGesg.Utils.JTokenTypeHandler());
-```
-
-### Modelado – opciones
-
-**Opción A (recomendada)** – Tipos Newtonsoft directos
-```csharp
-[Jsonb] public JObject? Preferencias { get; set; }
-[Jsonb] public JToken?  Roles        { get; set; }
-```
-- ✅ Lectura/escritura automática (con handlers).
-- ✅ Puedes mutar el JSON como objeto.
-
-**Opción B** – Guardar como `string`
-```csharp
-[Jsonb] public string? Preferencias { get; set; }
-```
-- ✅ Escritura correcta como `jsonb`.
-- 🔶 Lectura te devuelve la cadena JSON (deserializas cuando lo necesites).
-
-**Opción C** – Tipos CLR (DTOs) serializables
-```csharp
-public class PreferenciasDto { public string Tema { get; set; } = "light"; }
-
-[Jsonb] public PreferenciasDto? Preferencias { get; set; }
-```
-- ✅ Con un `TypeHandler<PreferenciasDto>` puedes leer/escribir DTOs tipados.
-
----
-
-## 🔎 Ejemplos de uso
-
-### Updates parciales y columnas específicas (nuevo)
-
-- Método: `Task<bool> UpdateSetAsync(IDbSession session, object id, object patch, CancellationToken ct = default)`
-- Genera `SET` únicamente con las propiedades presentes en `patch` (objeto o `Dictionary<string,object?>`).
-- Aplica whitelist por `EntityMap` (propiedad, `snake_case` o `[Column]`); ignora campos no válidos.
-- Excluye siempre la PK y la columna de soft delete.
-- Maneja correctamente columnas `jsonb` (usando `NpgsqlDbType.Jsonb`).
-
-Ejemplos:
-
-```csharp
-// 1) Objeto anónimo / DTO
-var ok1 = await repo.UpdateSetAsync(db, id: 10, new { Nombre = "Alice", Usuario = "alice2" }, ct);
-
-// 2) snake_case o nombre exacto de [Column]
-var ok2 = await repo.UpdateSetAsync(db, 10, new { password_hash = "xxx" }, ct);
-
-// 3) Diccionario (por ejemplo, desde un payload dinámico)
-var patch = new Dictionary<string, object?>
-{
-    ["Nombre"] = "Alice Doe",
-    ["preferencias"] = JObject.FromObject(new { tema = "dark" }) // jsonb
-};
-var ok3 = await repo.UpdateSetAsync(db, 10, patch, ct);
 ```
 
 Notas:
-- Si ninguna columna es válida tras aplicar la whitelist, lanza `InvalidOperationException`.
-- Los nombres de campo admiten: nombre de propiedad C#, su `snake_case` o el nombre exacto definido en `[Column]` (case-insensitive).
+- [Required] y [StringLength] son simples y no dependientes de DataAnnotations.
+- Decide si se valida antes de persistir (servicio/aplicación) o en capa de presentación.
 
-### Paginación con total (PageAsync) y conteo (CountAsync)
 
-- Ambos métodos reutilizan la misma lógica de filtros/WHERE que `GetAllAsync` (soft delete, filtros por `filterField`/`filterValue`, `StringFilterMode`, `forceLowerCase`).
-- `PageAsync` devuelve un objeto con `{ Items, Total, Page, Size }`.
+## Ejecución genérica de funciones PostgreSQL (IDataFunctions)
 
+Contrato y comportamiento:
 ```csharp
-// Total con los mismos filtros
-var total = await repo.CountAsync(db,
-    includeSoftDeleted: false,
-    filterField: "Nombre",
-    filterValue: "ali",
-    stringMode: StringFilterMode.Contains,
-    forceLowerCase: true,
-    ct);
-
-// Página 2 de tamaño 10, ordenando por "Usuario" descendente
-var page = await repo.PageAsync(db,
-    page: 2,
-    size: 10,
-    includeSoftDeleted: false,
-    orderBy: "Usuario",
-    dir: SortDirection.Desc,
-    filterField: "Nombre",
-    filterValue: "ali",
-    stringMode: StringFilterMode.Contains,
-    forceLowerCase: true,
-    ct: ct);
-
-// page.Items -> List<T>
-// page.Total -> int (COUNT(*))
-// page.Page  -> número de página (1-based)
-// page.Size  -> tamaño de página
-```
-
-```csharp
-// GetById
-var usuario = await repo.GetByIdAsync(db, 123, ct);
-
-// GetAll con orden y paginación
-var page = await repo.GetAllAsync(db, includeSoftDeleted: false, orderBy: "Usuario",
-                                  dir: SortDirection.Desc, limit: 20, offset: 0, ct: ct);
-
-// Insert devolviendo id
-var id = await repo.InsertAsyncReturnId(db, new Usuarios {
-    Nombre = "Alice",
-    Usuario = "alice",
-    PasswordHash = "xxx",
-    Preferencias = JObject.FromObject(new { tema = "dark", notificaciones = true })
-}, ct);
-
-// Update
-usuario!.Nombre = "Alice Doe";
-usuario.Preferencias!["tema"] = "light";
-var ok = await repo.UpdateAsync(db, usuario, ct);
-
-// Delete (soft si existe, si no, delete físico)
-var deleted = await repo.DeleteAsync(db, id!, ct);
-```
-
----
-
-## 🧯 Notas y gotchas
-
-- `InsertAsyncReturnId` devuelve `object?` por si tu PK es `int`, `long`, `Guid`, etc.
-- Si un nombre de propiedad supera 63 chars (raro), el alias en `SELECT` se trunca.
-- `[Column("nombre_en_bd")]` fuerza el nombre exacto de la columna.
-- `ORDER BY` ignora campos no válidos (whitelist).
-
----
-
-## ✅ Checklist rápido
-
-- [ ] Registré `IDbSession` y `NpgsqlDataSource`.
-- [ ] Registré los **TypeHandlers** de Newtonsoft para Dapper.
-- [ ] Mis modelos usan `[Table]`, `[Key]`, `[Column]` donde corresponde.
-- [ ] Para `jsonb`, uso `[Jsonb]` y tipos `JObject/JArray/JToken` o `string` según convenga.
-- [ ] Commit/Rollback con `db.BeginTransactionAsync()` en mis controladores/servicios.
-
-
-# MicroOrmGesg 1.1 — Documentación actualizada
-
-Esta versión amplía las capacidades de **GetAllAsync** para permitir filtros dinámicos por campo y valor, con soporte para diferentes tipos de datos y modos de búsqueda en campos string.
-
----
-
-## 🚀 Cambios principales respecto a 1.0
-
-- **Nuevo filtrado dinámico en `GetAllAsync`**:
-  - Parámetros opcionales `filterField` y `filterValue`.
-  - Detección de tipo del valor para construir el filtro adecuado (`=`, `ILIKE`, etc.).
-  - Enum `StringFilterMode` para cadenas:
-    - `Equals` (igualdad exacta, por defecto).
-    - `Contains` (contiene, `ILIKE '%valor%'`).
-    - `StartsWith` (comienza con, `ILIKE 'valor%'`).
-    - `EndsWith` (termina con, `ILIKE '%valor'`).
-  - Protección contra inyecciones con *whitelist* de columnas (solo propiedades válidas o marcadas con `[Column]`).
-
----
-
-## 📦 Firma del método actualizada
-
-```csharp
-Task<List<T>> GetAllAsync(
-    IDbSession session,
-    bool includeSoftDeleted = false,
-    string? orderBy = null,
-    SortDirection dir = SortDirection.Asc,
-    int? limit = null,
-    int? offset = null,
-    string? filterField = null,
-    object? filterValue = null,
-    StringFilterMode stringMode = StringFilterMode.Equals
-);
-```
-
----
-
-## 📋 Ejemplos de uso
-
-**1. Filtrado exacto por campo string:**
-```csharp
-var usuarios = await repo.GetAllAsync(db,
-    filterField: "Usuario",
-    filterValue: "alice");
-```
-
-**2. Filtrado por texto (contiene, case-insensitive):**
-```csharp
-var usuarios = await repo.GetAllAsync(db,
-    filterField: "nombre",
-    filterValue: "carla",
-    stringMode: StringFilterMode.Contains);
-```
-
-**3. Filtrado por campo con `[Column]`:**
-```csharp
-var usuarios = await repo.GetAllAsync(db,
-    filterField: "password_hash",
-    filterValue: "xyz");
-```
-
-**4. Combinado con orden y paginación:**
-```csharp
-var usuarios = await repo.GetAllAsync(db,
-    includeSoftDeleted: false,
-    orderBy: "nombre",
-    dir: SortDirection.Desc,
-    limit: 20,
-    offset: 0,
-    filterField: "activo",
-    filterValue: true);
-```
-
----
-
-## ⚙️ Implementación de seguridad para filtros
-
-El método `ResolveColumn` asegura que solo se pueda filtrar por columnas conocidas en el modelo:
-
-```csharp
-private static string? ResolveColumn(EntityMap map, string field)
+public interface IDataFunctions
 {
-    var f = field.Trim();
-
-    // 1) Propiedad C#
-    var byProp = map.Props.FirstOrDefault(p =>
-        string.Equals(p.Name, f, StringComparison.OrdinalIgnoreCase));
-    if (byProp != null)
-        return byProp.GetCustomAttribute<ColumnAttribute>()?.Name ?? Naming.ToSnake(byProp.Name);
-
-    // 2) snake_case
-    var bySnake = map.Props.FirstOrDefault(p =>
-        string.Equals(Naming.ToSnake(p.Name), f, StringComparison.OrdinalIgnoreCase));
-    if (bySnake != null)
-        return bySnake.GetCustomAttribute<ColumnAttribute>()?.Name ?? Naming.ToSnake(bySnake.Name);
-
-    // 3) Nombre exacto en [Column]
-    var byColumnAttr = map.Props.FirstOrDefault(p =>
-        string.Equals(p.GetCustomAttribute<ColumnAttribute>()?.Name, f, StringComparison.OrdinalIgnoreCase));
-    return byColumnAttr?.GetCustomAttribute<ColumnAttribute>()?.Name;
-}
-```
-
----
-
-## 📌 Notas y buenas prácticas
-
-- Si el tipo de `filterValue` es `string`, el modo de comparación se controla con `stringMode`.
-- Si es `int`, `bool`, `DateTime`, etc., siempre se usará `=`.
-- La *whitelist* evita inyecciones SQL verificando el campo contra la definición del modelo.
-- Compatible con el resto de características de `GetAllAsync`: soft delete, ordenación y paginación.
-
----
-
-## ✅ Checklist rápido (añadido para 1.1)
-
-- [ ] Usar siempre `filterField` con nombres de propiedad o `[Column]` válidos.
-- [ ] Definir `[Column]` en propiedades que no coincidan con el nombre real de la columna.
-- [ ] Probar filtros con todos los `StringFilterMode`.
-- [ ] Combinar filtros con `orderBy`, `limit` y `offset` para optimizar consultas grandes.
-
-
----
-
-## 🏷️ Validación de modelos con atributos (nuevo)
-
-A partir de esta versión se incluyen atributos de validación simples con mensajes personalizados y un validador por reflexión.
-
-### Atributos
-
-- `[Required(Message = "...")]`: Campo obligatorio. Para strings, no permite `null`, vacío o solo espacios.
-- `[StringLength(min, max, Message = "...")]`: Longitud mínima y/o máxima. Si `min` o `max` son `0`, ese límite se ignora.
-
-```csharp
-public sealed class UsuarioDto
-{
-    [Required(Message = "El nombre es obligatorio")]
-    [StringLength(min: 2, max: 50, Message = "El nombre debe tener entre 2 y 50 caracteres")]
-    public string? Nombre { get; set; }
-
-    [Required]
-    [StringLength(max: 20)] // solo máximo
-    public string? Usuario { get; set; }
-}
-```
-
-### Validación
-
-Usa el helper `ModelValidator`:
-
-```csharp
-var dto = new UsuarioDto { Nombre = " ", Usuario = "un_usuario_muy_muy_muy_largo" };
-var errores = MicroOrmGesg.Utils.ModelValidator.Validate(dto);
-
-if (errores.Any())
-{
-    // Cada error tiene PropertyName y Message
-    foreach (var e in errores)
-        Console.WriteLine($"{e.PropertyName}: {e.Message}");
+    Task<TResult?> CallFunctionAsync<TResult>(IDbSession session, string functionName, object? args = null, string? schema = null, CancellationToken ct = default);
+    Task<List<TResult>> CallFunctionListAsync<TResult>(IDbSession session, string functionName, object? args = null, string? schema = null, CancellationToken ct = default);
+    Task CallVoidFunctionAsync(IDbSession session, string functionName, object? args = null, string? schema = null, CancellationToken ct = default);
 }
 ```
 
 Reglas:
-- `[Required]` rechaza `null` y, en strings, vacío o espacios.
-- `[StringLength]` aplica solo a `string`. `min=0` o `max=0` → límite ignorado.
-- Si no defines `Message`, se generan mensajes por defecto con el nombre de la propiedad y los límites.
+- Escalares/un solo registro: select schema.func(@p1,...)
+- Conjuntos (TABLE/SETOF): select * from schema.func(@p1,...)
+- Normalización de parámetros: args admite objeto anónimo o IDictionary<string,object?>; los nombres se normalizan quitando '@'.
+
+Ejemplo:
+```csharp
+await _db.OpenAsync(ct);
+string? token = await _funcs.CallFunctionAsync<string>(
+    _db,
+    "generar_token_recuperacion",
+    new { p_idusuario = 1, p_ip_solicitud = "1.2.3.4", p_duracion_horas = 24 },
+    schema: null,
+    ct);
+
+public sealed class ValidacionDto
+{
+    public bool Valido { get; set; }
+    public int? IdUsuario { get; set; }
+    public string? Mensaje { get; set; }
+    public int Intentos { get; set; }
+}
+var lista = await _funcs.CallFunctionListAsync<ValidacionDto>(
+    _db,
+    "validar_token_recuperacion",
+    new { p_token = token },
+    schema: null,
+    ct);
+
+await _funcs.CallVoidFunctionAsync(_db, "incrementar_intento_token", new { p_token = token }, ct: ct);
+```
+
+
+## Seguridad, rendimiento y buenas prácticas
+
+Seguridad:
+- SQL parametrizado en todas las rutas.
+- Whitelist de columnas para ordenar/filtrar/actualizar con nombres C#, snake_case o [Column].
+- Quoting de identificadores previene colisiones y ambigüedades.
+
+Rendimiento:
+- Pool de conexiones con NpgsqlDataSource como Singleton.
+- Selección con alias para Dapper evitando binding costoso.
+- Paginación por limit/offset con filtros indexables.
+- JSONB explícito en escritura evita conversiones ambiguas.
+
+Cancelación:
+- Todas las APIs aceptan CancellationToken y lo propagan a CommandDefinition y DbSession.
+- Integra HttpContext.RequestAborted para cancelación cooperativa en ASP.NET Core.
+
+Transacciones:
+- Mantener el scope lo más acotado posible.
+- Usar el IsolationLevel adecuado a la operación.
+
+
+## Migraciones y evolución de esquemas
+
+- Añadir columnas: usar [Column] en el modelo si el nombre difiere; si es jsonb, añadir [Jsonb].
+- Cambiar PK: actualizar [Key]/[ExplicitKey] y comprobar que EntityMap detecta correctamente KeyProperty/KeyColumn.
+- Soft delete: preferible añadir una columna booleana y marcarla con [SoftDelete].
+- Renombrado de tabla/esquema: actualizar [Table(Name, Schema)].
+
+
+## Pruebas (ideas y patrones)
+
+- Test de mapeo: verificar que SelectColsCsv contiene alias esperados y que GetInsertColumnsAndParams excluye columnas no escribibles.
+- Test de filtros: Given-When-Then para cada StringFilterMode con forceLowerCase on/off.
+- Test de jsonb: insertar/leer un JObject y comparar semánticamente.
+- Test de UpdateSet: enviar patch con campos válidos/invalidos, PK/soft delete, y asegurar whitelist y errores esperados.
+- Test de DbSession: commit/rollback y estados de transacción; error cuando se usa sin OpenAsync.
+
+Ejemplo (xUnit, pseudo):
+```csharp
+[Fact]
+public async Task UpdateSet_Should_Ignore_SoftDelete_And_PrimaryKey()
+{
+    // Arrange: entidad con [SoftDelete] y PK
+    // Act: patch con { Eliminado = true, Id = 99, Nombre = "X" }
+    // Assert: solo actualiza Nombre; ignora Eliminado e Id; SQL contiene set "nombre" = @p_Nombre
+}
+```
+
+
+## FAQ (preguntas frecuentes)
+
+- ¿Puedo usarlo con múltiples bases de datos? Actualmente enfocado en PostgreSQL (Npgsql). Para otras BD habría que adaptar quoting, tipos y handlers.
+- ¿Cómo aplico filtros por varias columnas? Hoy el contrato admite un único par filterField/filterValue. Para múltiples condiciones, construir una query específica o extender el repositorio.
+- ¿Cómo mapear enums o tipos complejos no JSONB? Crear TypeHandlers específicos de Dapper.
+- ¿Qué pasa con columnas calculadas? Marcar con [Computed] para excluir de INSERT/UPDATE.
+- ¿Cómo forzar escritura de PK? Usa [ExplicitKey] para PK manual.
+
+
+## Troubleshooting
+
+- Mensaje: "No hay columnas válidas para actualizar con el patch proporcionado." → El patch no contenía campos whitelisteados o todos eran PK/soft delete/Computed/Write(false). Revisa nombres (C#, snake_case o [Column]).
+- Mensaje: "El modelo X no tiene definida una clave primaria." → Agrega [Key] o [ExplicitKey] a alguna propiedad pública legible.
+- Filtro que no aplica: asegúrate de que filterField resuelva a una columna válida mediante [Column] o convención.
+- JSON que llega null tras SELECT: registra los TypeHandlers de JObject/JArray/JToken antes de ejecutar consultas (Startup/Program).
+- Deadlocks o timeouts: revisa tamaño de transacciones y aislamiento; evita locks prolongados.
+
 
 ---
+
+Este anexo complementa la guía breve superior. Si necesitas ejemplos adicionales (por entidad/DTO específicos, mapeos complejos o funciones PostgreSQL particulares), añade tus casos y amplía con pruebas unitarias para asegurar regresión cero.
+
+
+
+## Filtros múltiples avanzados
+
+El contrato actual de GetAllAsync/CountAsync/PageAsync admite un único par filterField/filterValue. Cuando necesites combinar varias condiciones, puedes extender el patrón de construcción del WHERE usando una whitelist de columnas (igual que ResolveColumn) y parámetros Dapper.
+
+Objetivos del patrón
+- Aceptar una lista de condiciones con operadores variados.
+- Resolver cada Field a una columna válida: nombre de propiedad C#, snake_case o [Column].
+- Construir expresiones con seguridad (siempre parametrizadas) y uniendo con AND/OR.
+- Mantener opciones para búsquedas case-insensitive con forceLowerCase.
+
+Modelo de condición (ejemplo)
+```csharp
+public enum FilterOp
+{
+    Equals,
+    Contains,
+    StartsWith,
+    EndsWith,
+    GreaterThan,
+    GreaterOrEqual,
+    LessThan,
+    LessOrEqual,
+    Between,   // usa Value y Value2
+    In,        // usa IEnumerable
+    IsNull,
+    IsNotNull
+}
+
+public sealed class FilterCondition
+{
+    public required string Field { get; init; }
+    public required FilterOp Op { get; init; }
+    public object? Value { get; init; }
+    public object? Value2 { get; init; }        // para Between
+    public bool ForceLowerCase { get; init; }   // para comparaciones string
+    public bool OrWithPrevious { get; init; }   // si true, une con OR en lugar de AND
+}
+```
+
+Construcción segura del WHERE (patrón dentro del repositorio)
+Nota: este ejemplo usa una función ResolveColumn análoga a la del repositorio, que acepta nombre de propiedad, snake_case o [Column].
+```csharp
+private static (string whereSql, DynamicParameters parameters) BuildWhereAndParamsMulti(
+    EntityMap map,
+    IEnumerable<FilterCondition> filters)
+{
+    var whereParts = new List<string>();
+    var parameters = new DynamicParameters();
+    int pIndex = 0;
+
+    foreach (var f in filters)
+    {
+        if (string.IsNullOrWhiteSpace(f.Field)) continue;
+        var col = ResolveColumn(map, f.Field);
+        if (col is null) continue; // fuera de whitelist
+        var colSql = Naming.Quote(col);
+
+        // operadores sin valor
+        if (f.Op == FilterOp.IsNull)
+        {
+            whereParts.Add((f.OrWithPrevious ? " or " : " and ") + $"{colSql} is null");
+            continue;
+        }
+        if (f.Op == FilterOp.IsNotNull)
+        {
+            whereParts.Add((f.OrWithPrevious ? " or " : " and ") + $"{colSql} is not null");
+            continue;
+        }
+
+        // preparar nombres de parámetros únicos
+        string p1 = $"p{pIndex++}";
+        string? p2 = null;
+
+        // strings con opción de lower-case
+        bool isString = f.Value is string;
+        string colExpr = isString && f.ForceLowerCase ? $"lower({colSql})" : colSql;
+        string valExpr = isString && f.ForceLowerCase ? $"lower(@{p1})" : $"@{p1}";
+
+        string expr;
+        switch (f.Op)
+        {
+            case FilterOp.Equals:
+                parameters.Add(p1, f.Value);
+                expr = $"{colExpr} = {valExpr}";
+                break;
+            case FilterOp.Contains:
+                parameters.Add(p1, f.Value);
+                expr = $"{colExpr} ILIKE '%' || {valExpr} || '%'";
+                break;
+            case FilterOp.StartsWith:
+                parameters.Add(p1, f.Value);
+                expr = $"{colExpr} ILIKE {valExpr} || '%'";
+                break;
+            case FilterOp.EndsWith:
+                parameters.Add(p1, f.Value);
+                expr = $"{colExpr} ILIKE '%' || {valExpr}";
+                break;
+            case FilterOp.GreaterThan:
+                parameters.Add(p1, f.Value);
+                expr = $"{colSql} > @{p1}";
+                break;
+            case FilterOp.GreaterOrEqual:
+                parameters.Add(p1, f.Value);
+                expr = $"{colSql} >= @{p1}";
+                break;
+            case FilterOp.LessThan:
+                parameters.Add(p1, f.Value);
+                expr = $"{colSql} < @{p1}";
+                break;
+            case FilterOp.LessOrEqual:
+                parameters.Add(p1, f.Value);
+                expr = $"{colSql} <= @{p1}";
+                break;
+            case FilterOp.Between:
+                p2 = $"p{pIndex++}";
+                parameters.Add(p1, f.Value);
+                parameters.Add(p2, f.Value2);
+                expr = $"{colSql} BETWEEN @{p1} AND @{p2}";
+                break;
+            case FilterOp.In:
+                // Dapper expande IEnumerable con el nombre del parámetro
+                parameters.Add(p1, f.Value);
+                expr = $"{colSql} = ANY(@{p1})"; // para arrays; o usar IN (...) si prefieres
+                break;
+            default:
+                continue;
+        }
+
+        string glue = whereParts.Count == 0 ? "" : (f.OrWithPrevious ? " or " : " and ");
+        whereParts.Add(glue + expr);
+    }
+
+    string where = whereParts.Count > 0 ? " where " + string.Concat(whereParts) : string.Empty;
+    return (where, parameters);
+}
+```
+
+Ejemplos de uso
+- AND simple (texto + bool):
+```csharp
+var filters = new List<FilterCondition>
+{
+    new() { Field = "Nombre", Op = FilterOp.Contains, Value = "ali", ForceLowerCase = true },
+    new() { Field = "Activo", Op = FilterOp.Equals, Value = true }
+};
+var (where, prms) = BuildWhereAndParamsMulti(map, filters);
+var sql = $"select {map.SelectColsCsv} from {map.TableFullQuoted}{where} order by \"Usuario\" asc limit 20";
+```
+
+- OR entre condiciones de texto:
+```csharp
+var filters = new List<FilterCondition>
+{
+    new() { Field = "Nombre", Op = FilterOp.Contains, Value = "ali", OrWithPrevious = false },
+    new() { Field = "Usuario", Op = FilterOp.Contains, Value = "ali", OrWithPrevious = true }
+};
+```
+
+- Rango de fechas + IN de estados:
+```csharp
+var filters = new List<FilterCondition>
+{
+    new() { Field = "fecha_alta", Op = FilterOp.Between, Value = new DateTime(2025,1,1), Value2 = new DateTime(2025,12,31) },
+    new() { Field = "estado", Op = FilterOp.In, Value = new[] { "pendiente", "activo" } }
+};
+```
+
+Notas y buenas prácticas
+- Mantén la whitelist de columnas (como ResolveColumn): propiedad C#, snake_case o [Column]; ignora lo que no resuelva.
+- Siempre parametriza (incluido IN/ANY) para evitar inyección y favorecer caché de planes.
+- Para agrupaciones complejas (paréntesis), puedes agrupar condiciones en listas y combinar resultados parciales: where = (A and B) or (C and D).
+- Si deseas exponer filtros múltiples en la API pública, considera un DTO dedicado y valida server-side los campos y operadores permitidos.
