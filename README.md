@@ -57,7 +57,38 @@ services.AddScoped(typeof(MicroOrmGesg.Interfaces.IDataMicroOrm<>), typeof(Micro
 
 // Ejecutor genérico de funciones PostgreSQL
 services.AddScoped<MicroOrmGesg.Interfaces.IDataFunctions, MicroOrmGesg.Repository.DataFunctionsRepository>();
+
+// Health check de base de datos (opcional)
+services.AddScoped<MicroOrmGesg.Interfaces.IDbHealthCheck, MicroOrmGesg.Repository.DbHealthCheck>();
 ```
+
+### Comprobación de disponibilidad de BD (Health Check)
+Puedes verificar si la base de datos está lista antes de iniciar sesión o arrancar la aplicación. Inyecta `IDbHealthCheck` y llama a `CheckAsync`.
+
+Ejemplos:
+```csharp
+// En Program.cs, antes de arrancar (opcional, con timeout/cancelación)
+using var scope = app.Services.CreateScope();
+var hc = scope.ServiceProvider.GetRequiredService<MicroOrmGesg.Interfaces.IDbHealthCheck>();
+var (okDefault, msgDefault) = await hc.CheckAsync(ct: CancellationToken.None);
+if (!okDefault)
+{
+    app.Logger.LogError("Base de datos no disponible: {Msg}", msgDefault);
+    return; // o Environment.Exit(1);
+}
+
+// En pantalla de login: validar con usuario/contraseña proporcionados
+var (okUser, msgUser) = await hc.CheckAsync(username: userInput, password: passwordInput, ct: CancellationToken.None);
+if (!okUser)
+{
+    ModelState.AddModelError("", $"No se pudo conectar a la BD: {msgUser}");
+    // impedir login/arranque según tu flujo
+}
+```
+
+`CheckAsync` devuelve:
+- Ok = true cuando puede abrir conexión y ejecutar `SELECT 1`.
+- Message = texto explicativo (incluye versión del servidor si OK, o detalle del error si falla).
 
 <a id="toc-dbsession"></a>
 ## DbSession (conexiones y transacciones)

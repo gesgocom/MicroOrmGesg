@@ -6,7 +6,7 @@
         <Nullable>enable</Nullable>
 
         <PackageId>Gesgocom.MicroOrmGesg</PackageId>
-        <Version>1.0.0</Version>
+        <Version>1.0.1</Version>
         <Authors>Jorge Jerez Sabater</Authors>
         <Description>Librería MicroORM para el acceso a datos con Postgres.</Description>
         <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
