@@ -1,0 +1,82 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>MicroOrmGesg</name>
+    </assembly>
+    <members>
+        <member name="T:MicroOrmGesg.RequiredAttribute">
+            <summary>
+            Indica que la propiedad es obligatoria. Para cadenas, no permite null ni cadenas vacías (o solo espacios).
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.RequiredAttribute.Message">
+            <summary>
+            Mensaje de error personalizado. Si no se especifica, se generará uno por defecto.
+            </summary>
+        </member>
+        <member name="T:MicroOrmGesg.StringLengthAttribute">
+            <summary>
+            Valida la longitud de una cadena. Si Min o Max son 0, ese límite se ignora.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.StringLengthAttribute.Min">
+            <summary>
+            Límite mínimo de longitud. 0 = sin mínimo.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.StringLengthAttribute.Max">
+            <summary>
+            Límite máximo de longitud. 0 = sin máximo.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.StringLengthAttribute.Message">
+            <summary>
+            Mensaje de error personalizado. Si no se especifica, se generará uno por defecto.
+            </summary>
+        </member>
+        <member name="T:MicroOrmGesg.Interfaces.IDbHealthCheck">
+            <summary>
+            Servicio para comprobar la disponibilidad de la base de datos.
+            Permite opcionalmente validar con un usuario/contraseña concretos.
+            Devuelve un resultado controlado con un booleano y un mensaje explicativo.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Interfaces.IDbHealthCheck.CheckAsync(System.String,System.String,System.Threading.CancellationToken)">
+            <summary>
+            Verifica si la base de datos está disponible abriendo una conexión y ejecutando un SELECT 1.
+            Si se proporcionan credenciales, se usan para la verificación; de lo contrario, se usa la configuración
+            del origen de datos (pool) registrado.
+            </summary>
+            <param name="username">Usuario a probar (opcional).</param>
+            <param name="password">Contraseña a probar (opcional).</param>
+            <param name="ct">Token de cancelación.</param>
+            <returns>Tupla (Ok, Message) con el resultado de la comprobación.</returns>
+        </member>
+        <member name="M:MicroOrmGesg.Repository.DataMicroOrmRepository`1.ResolveColumn(MicroOrmGesg.Utils.EntityMap,System.String)">
+            <summary>
+            Resuelve un nombre de campo proporcionado por el consumidor a un nombre de columna real:
+            - Nombre de propiedad C# (case-insensitive)
+            - Nombre snake_case de la propiedad (case-insensitive)
+            - Nombre definido en [Column("...")] (case-insensitive)
+            Devuelve null si no hay coincidencia (whitelist).
+            </summary>
+        </member>
+        <member name="T:MicroOrmGesg.Repository.DbHealthCheck">
+            <summary>
+            Implementación de comprobación de salud de la base de datos.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Repository.DbHealthCheck.#ctor(Npgsql.NpgsqlDataSource)">
+            <summary>
+            Implementación de comprobación de salud de la base de datos.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Utils.ModelValidator.Validate(System.Object)">
+            <summary>
+            Valida un modelo utilizando los atributos [Required] y [StringLength].
+            </summary>
+            <param name="model">Instancia a validar.</param>
+            <returns>Listado de errores encontrados. Si está vacío, la validación fue exitosa.</returns>
+        </member>
+    </members>
+</doc>
