@@ -52,6 +52,288 @@
             <param name="ct">Token de cancelación.</param>
             <returns>Tupla (Ok, Message) con el resultado de la comprobación.</returns>
         </member>
+        <member name="T:MicroOrmGesg.Migrations.Extensions.ServiceCollectionExtensions">
+            <summary>
+            Métodos de extensión para registrar el sistema de migraciones en el contenedor de DI.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Migrations.Extensions.ServiceCollectionExtensions.AddPgMigrations(Microsoft.Extensions.DependencyInjection.IServiceCollection,System.Action{MicroOrmGesg.Migrations.PgMigratorOptions})">
+            <summary>
+            Registra el migrador de PostgreSQL (IPgMigrator) en el contenedor de servicios.
+            Requiere que NpgsqlDataSource esté previamente registrado como Singleton.
+            </summary>
+            <param name="services">Colección de servicios.</param>
+            <param name="configureOptions">Configuración opcional de PgMigratorOptions.</param>
+            <returns>La colección de servicios para encadenamiento.</returns>
+        </member>
+        <member name="T:MicroOrmGesg.Migrations.FileMigrationSource">
+            <summary>
+            Fuente de migraciones basada en un archivo SQL en disco.
+            Lee el archivo línea por línea en streaming para minimizar el uso de memoria.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Migrations.FileMigrationSource.#ctor(System.String)">
+            <summary>
+            Crea una nueva fuente de migraciones desde un archivo.
+            </summary>
+            <param name="filePath">Ruta absoluta o relativa al archivo SQL con los pasos de migración.</param>
+            <exception cref="T:System.ArgumentNullException">Si filePath es null.</exception>
+            <exception cref="T:System.IO.FileNotFoundException">Si el archivo no existe (se valida en ReadLinesAsync).</exception>
+        </member>
+        <member name="M:MicroOrmGesg.Migrations.FileMigrationSource.ReadLinesAsync(System.Threading.CancellationToken)">
+            <summary>
+            Lee las líneas del archivo SQL de forma asíncrona.
+            </summary>
+            <param name="ct">Token de cancelación.</param>
+            <returns>Secuencia asíncrona de líneas del archivo.</returns>
+            <exception cref="T:System.IO.FileNotFoundException">Si el archivo no existe.</exception>
+        </member>
+        <member name="T:MicroOrmGesg.Migrations.IMigrationSource">
+            <summary>
+            Define una fuente de scripts de migración SQL.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Migrations.IMigrationSource.ReadLinesAsync(System.Threading.CancellationToken)">
+            <summary>
+            Lee las líneas del script de migración de forma asíncrona (streaming).
+            Cada línea puede contener SQL, comentarios o directivas @step/@check.
+            </summary>
+            <param name="ct">Token de cancelación.</param>
+            <returns>Secuencia asíncrona de líneas del script.</returns>
+        </member>
+        <member name="T:MicroOrmGesg.Migrations.Internal.SqlSplitter">
+            <summary>
+            Divide una cadena SQL en sentencias individuales respetando la sintaxis de PostgreSQL.
+            Maneja correctamente literales de cadena, dollar quoting, y comentarios.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Migrations.Internal.SqlSplitter.Split(System.String)">
+            <summary>
+            Divide el SQL en sentencias separadas por punto y coma (;).
+            Respeta literales de cadena ('...'), dollar quoting ($...$), y comentarios (-- y /* ... */).
+            </summary>
+            <param name="sql">SQL con una o más sentencias.</param>
+            <returns>Enumerable de sentencias SQL individuales, sin punto y coma final.</returns>
+        </member>
+        <member name="T:MicroOrmGesg.Migrations.Internal.StepParser">
+            <summary>
+            Parsea scripts SQL con directivas @step y @check para generar pasos de migración.
+            Formato esperado:
+            -- @step id:001 name:create.users
+            -- @check SELECT to_regclass('public.users') IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS users(...);
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Migrations.Internal.StepParser.ParseAsync(System.Collections.Generic.IAsyncEnumerable{System.String},System.Threading.CancellationToken)">
+            <summary>
+            Parsea una secuencia asíncrona de líneas SQL y genera pasos de migración.
+            </summary>
+            <param name="lines">Secuencia de líneas del script SQL.</param>
+            <param name="ct">Token de cancelación.</param>
+            <returns>Secuencia asíncrona de pasos de migración.</returns>
+        </member>
+        <member name="T:MicroOrmGesg.Migrations.IPgMigrator">
+            <summary>
+            Migrador de esquemas PostgreSQL con soporte para idempotencia, checksums y detección de drift.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Migrations.IPgMigrator.RunAsync(MicroOrmGesg.Migrations.IMigrationSource,System.Threading.CancellationToken)">
+            <summary>
+            Ejecuta las migraciones desde la fuente especificada.
+            Los pasos se aplican secuencialmente en una transacción por paso.
+            Usa advisory locks para evitar ejecuciones concurrentes.
+            </summary>
+            <param name="source">Fuente de scripts de migración (archivo, recurso embebido, etc.).</param>
+            <param name="ct">Token de cancelación.</param>
+            <returns>Resultado de la ejecución con estadísticas y detalles por paso.</returns>
+        </member>
+        <member name="T:MicroOrmGesg.Migrations.Models.DriftPolicy">
+            <summary>
+            Define el comportamiento cuando se detecta un drift (cambio de checksum en un paso ya aplicado).
+            </summary>
+        </member>
+        <member name="F:MicroOrmGesg.Migrations.Models.DriftPolicy.Fail">
+            <summary>
+            Lanza una excepción si el checksum difiere del registrado en el journal.
+            </summary>
+        </member>
+        <member name="F:MicroOrmGesg.Migrations.Models.DriftPolicy.WarnAndSkip">
+            <summary>
+            Registra un warning en el log y omite la re-ejecución del paso.
+            Esta es la opción más segura por defecto.
+            </summary>
+        </member>
+        <member name="F:MicroOrmGesg.Migrations.Models.DriftPolicy.Reapply">
+            <summary>
+            Re-ejecuta el paso aunque el @check devuelva true.
+            Útil para funciones/vistas que pueden recrearse sin riesgo.
+            </summary>
+        </member>
+        <member name="T:MicroOrmGesg.Migrations.Models.MigrationResult">
+            <summary>
+            Resultado completo de la ejecución de migraciones.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationResult.StepsApplied">
+            <summary>
+            Número de pasos aplicados exitosamente.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationResult.StepsSkipped">
+            <summary>
+            Número de pasos omitidos (ya aplicados previamente).
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationResult.StepsFailed">
+            <summary>
+            Número de pasos que fallaron durante la ejecución.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationResult.StepsWithDrift">
+            <summary>
+            Número de pasos con drift detectado (checksum diferente).
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationResult.TotalDuration">
+            <summary>
+            Duración total de la ejecución de todas las migraciones.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationResult.Steps">
+            <summary>
+            Resultados detallados de cada paso ejecutado.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationResult.IsSuccess">
+            <summary>
+            Indica si todas las migraciones se completaron sin errores.
+            </summary>
+        </member>
+        <member name="T:MicroOrmGesg.Migrations.Models.MigrationStep">
+            <summary>
+            Representa un paso de migración parseado desde el script SQL.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationStep.Id">
+            <summary>
+            Identificador único del paso (p. ej., "001", "002-create-users").
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationStep.Name">
+            <summary>
+            Nombre descriptivo del paso (p. ej., "create.users", "add.index.users.email").
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationStep.CheckSql">
+            <summary>
+            SQL opcional para verificar si el paso ya está aplicado (p. ej., "SELECT to_regclass('public.users') IS NOT NULL").
+            Si devuelve true, el paso podría omitirse según la política de drift.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationStep.SqlToApply">
+            <summary>
+            SQL del paso a ejecutar (puede contener múltiples sentencias separadas por ;).
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.MigrationStep.SqlBuilder">
+            <summary>
+            StringBuilder interno usado durante el parsing. No se usa después del parsing.
+            </summary>
+        </member>
+        <member name="T:MicroOrmGesg.Migrations.Models.StepResult">
+            <summary>
+            Resultado de la ejecución de un paso individual de migración.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.StepResult.StepId">
+            <summary>
+            Identificador del paso.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.StepResult.StepName">
+            <summary>
+            Nombre del paso.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.StepResult.Checksum">
+            <summary>
+            Checksum SHA-256 del SQL ejecutado.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.StepResult.Success">
+            <summary>
+            Indica si el paso se ejecutó correctamente.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.StepResult.Skipped">
+            <summary>
+            Indica si el paso fue omitido (ya aplicado previamente con el mismo checksum).
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.StepResult.DriftDetected">
+            <summary>
+            Indica si se detectó un drift (checksum diferente al registrado).
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.StepResult.DurationMs">
+            <summary>
+            Duración de la ejecución del paso en milisegundos.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.Models.StepResult.Message">
+            <summary>
+            Mensaje de error si el paso falló, o mensaje de advertencia si hubo drift.
+            </summary>
+        </member>
+        <member name="T:MicroOrmGesg.Migrations.PgMigrator">
+            <summary>
+            Implementación del migrador de esquemas PostgreSQL con soporte para idempotencia,
+            checksums, detección de drift y advisory locks.
+            </summary>
+        </member>
+        <member name="T:MicroOrmGesg.Migrations.PgMigratorOptions">
+            <summary>
+            Opciones de configuración para el migrador de PostgreSQL.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.PgMigratorOptions.AdvisoryLockKey">
+            <summary>
+            Clave única para el advisory lock de PostgreSQL.
+            Previene ejecuciones concurrentes de migraciones.
+            Por defecto: "micro-orm-gesg:migrations:default"
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.PgMigratorOptions.CommandTimeoutSeconds">
+            <summary>
+            Timeout en segundos para comandos SQL individuales.
+            Por defecto: 120 segundos (2 minutos).
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.PgMigratorOptions.DriftPolicy">
+            <summary>
+            Política de manejo de drift (cuando el checksum de un paso cambia).
+            Por defecto: WarnAndSkip (registra advertencia y omite re-ejecución).
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.PgMigratorOptions.StopOnError">
+            <summary>
+            Si es true, detiene la ejecución de migraciones al primer error.
+            Si es false, continúa con los siguientes pasos tras un fallo.
+            Por defecto: true.
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.PgMigratorOptions.JournalTableName">
+            <summary>
+            Nombre de la tabla que almacena el journal de migraciones.
+            Por defecto: "__micro_orm_migrations"
+            </summary>
+        </member>
+        <member name="P:MicroOrmGesg.Migrations.PgMigratorOptions.JournalSchema">
+            <summary>
+            Schema de la tabla de journal. Si es null, usa el schema por defecto (public).
+            Por defecto: null.
+            </summary>
+        </member>
         <member name="M:MicroOrmGesg.Repository.DataMicroOrmRepository`1.ResolveColumn(MicroOrmGesg.Utils.EntityMap,System.String)">
             <summary>
             Resuelve un nombre de campo proporcionado por el consumidor a un nombre de columna real:

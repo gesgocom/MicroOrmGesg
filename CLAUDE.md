@@ -77,6 +77,91 @@ dotnet clean MicroOrmGesg
    - `CallVoidFunctionAsync`: functions with no return value
    - Accepts args as anonymous objects or IDictionary<string, object?>
 
+5. **PgMigrator** (`Migrations/PgMigrator.cs`)
+   - Schema migration system for PostgreSQL with idempotency and drift detection
+   - Executes sequential migration steps from SQL script files with `@step` and `@check` directives
+   - Uses advisory locks to prevent concurrent migration execution
+   - Maintains a journal table (`__micro_orm_migrations`) with checksums for each step
+   - Each step executes in its own transaction (rollback on failure)
+   - Detects "drift" when checksums change for already-applied steps
+   - Independent from DbSession (uses NpgsqlDataSource directly)
+   - Designed to run at application startup before any requests are processed
+
+### Database Migrations
+
+The migration system allows you to manage PostgreSQL schema evolution with safety and idempotency.
+
+**Script Format:**
+```sql
+-- @step id:001 name:create.users
+-- @check SELECT to_regclass('public.users') IS NOT NULL;
+CREATE TABLE IF NOT EXISTS users(
+  id serial PRIMARY KEY,
+  username text NOT NULL,
+  email text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- @step id:002 name:index.users.email
+-- @check SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE indexname='idx_users_email');
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+```
+
+**Key Features:**
+- `@step id:XXX name:description` - Defines a migration step with unique ID and descriptive name
+- `@check <SQL>` - Optional SQL that returns boolean; if true, step may be skipped based on drift policy
+- Each step can contain multiple SQL statements (separated by semicolons)
+- Supports PostgreSQL-specific syntax: dollar quoting (`$$`, `$tag$`), comments (`--`, `/* */`), and string literals
+
+**Drift Policies:**
+- `Fail`: Throw exception if checksum changes for an already-applied step
+- `WarnAndSkip` (default): Log warning and skip re-execution
+- `Reapply`: Re-execute step even if @check passes (useful for functions/views)
+
+**Registration and Usage:**
+```csharp
+// In Program.cs - register migrations
+services.AddPgMigrations(options =>
+{
+    options.AdvisoryLockKey = "myapp:migrations";
+    options.CommandTimeoutSeconds = 120;
+    options.DriftPolicy = DriftPolicy.WarnAndSkip;
+    options.StopOnError = true;
+    options.JournalTableName = "__micro_orm_migrations";
+});
+
+// Option 1: Manual execution
+var migrator = app.Services.GetRequiredService<IPgMigrator>();
+var source = new FileMigrationSource("./scripts/schema.sql");
+var result = await migrator.RunAsync(source, cancellationToken);
+
+if (!result.IsSuccess)
+{
+    app.Logger.LogError("Migrations failed: {Failed} steps failed", result.StepsFailed);
+    Environment.Exit(1);
+}
+
+// Option 2: Automatic execution via IHostedService (create custom service)
+```
+
+**Best Practices:**
+- Always use `IF NOT EXISTS` in CREATE statements
+- Use `@check` for validations not covered by IF NOT EXISTS (column types, constraints, etc.)
+- One logical change per step (easier to track and rollback mentally)
+- Never modify a step's SQL after it's been applied to production (checksums will differ)
+- Run migrations before starting the main application (not during request handling)
+- Test migrations on a copy of production data before deploying
+
+**Journal Table:**
+The system creates a journal table to track applied migrations:
+- `step_id`: Unique identifier of the step
+- `step_name`: Descriptive name
+- `checksum`: SHA-256 hash of the SQL (detects changes)
+- `applied_at`: Timestamp of execution
+- `duration_ms`: Execution time in milliseconds
+- `success`: Boolean indicating success/failure
+- `message`: Error message or drift warning
+
 ### Mapping Attributes (`Attributes.cs`)
 
 - **[Table("name", Schema = "schema")]**: Map entity to table (defaults to snake_case of class name)
@@ -148,6 +233,14 @@ services.AddScoped<IDataFunctions, DataFunctionsRepository>();
 
 // Health check (optional)
 services.AddScoped<IDbHealthCheck, DbHealthCheck>();
+
+// Migrations (optional - see Database Migrations section)
+services.AddPgMigrations(options =>
+{
+    options.AdvisoryLockKey = "myapp:migrations";
+    options.DriftPolicy = DriftPolicy.WarnAndSkip;
+    options.StopOnError = true;
+});
 ```
 
 ### Column Name Resolution
@@ -226,3 +319,6 @@ When writing tests for this library:
 3. **Whitelist-based column resolution**: Security-first approach to prevent SQL injection
 4. **Convention over configuration**: Snake_case naming by default, attributes for exceptions
 5. **CancellationToken everywhere**: First-class support for cooperative cancellation in ASP.NET Core
+6. **Migrations independent from DbSession**: PgMigrator uses NpgsqlDataSource directly since migrations run at startup, not during requests
+7. **Checksum-based drift detection**: SHA-256 hashing of SQL content ensures migrations haven't changed after being applied
+8. **Advisory locks for migrations**: Prevents concurrent migration execution in multi-instance deployments
