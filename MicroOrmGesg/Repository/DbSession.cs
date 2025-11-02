@@ -1,5 +1,6 @@
 using System.Data;
 using MicroOrmGesg.Interfaces;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 
 namespace MicroOrmGesg.Repository;
@@ -16,10 +17,11 @@ namespace MicroOrmGesg.Repository;
  *  4) CommitAsync() o RollbackAsync()
  *  5) Dispose/DisposeAsync() (normalmente gestionado por DI si está registrado como Scoped)
  */
-public sealed class DbSession(NpgsqlDataSource dataSource) : IDbSession
+public sealed class DbSession(NpgsqlDataSource dataSource, ILogger<DbSession> logger) : IDbSession
 {
     /* Fábrica de conexiones con pool; segura para subprocesos (thread-safe) */
     private readonly NpgsqlDataSource _dataSource = dataSource;
+    private readonly ILogger<DbSession> _logger = logger;
 
     /* Conexión única por cada ámbito (scope) */
     private NpgsqlConnection? _conn;
@@ -46,10 +48,17 @@ public sealed class DbSession(NpgsqlDataSource dataSource) : IDbSession
         ThrowIfDisposed();
 
         if (_conn is { State: ConnectionState.Open })
+        {
+            _logger.LogDebug("Reutilizando conexión existente a la base de datos");
             return _conn;
+        }
 
         _conn?.Dispose(); // limpiar cualquier conexión previa cerrada o defectuosa
+
+        _logger.LogDebug("Abriendo nueva conexión a la base de datos desde el pool");
         _conn = await _dataSource.OpenConnectionAsync(ct);
+        _logger.LogDebug("Conexión abierta exitosamente");
+
         return _conn;
     }
 
@@ -64,10 +73,15 @@ public sealed class DbSession(NpgsqlDataSource dataSource) : IDbSession
         ThrowIfDisposed();
 
         if (_tx is not null)
+        {
+            _logger.LogError("Intento de iniciar una transacción cuando ya existe una activa");
             throw new InvalidOperationException("Ya existe una transacción activa.");
+        }
 
+        _logger.LogDebug("Iniciando transacción con nivel de aislamiento {IsolationLevel}", isolation);
         var conn = await OpenAsync(ct);
         _tx = await conn.BeginTransactionAsync(isolation, ct);
+        _logger.LogDebug("Transacción iniciada exitosamente");
     }
 
     /*
@@ -80,11 +94,16 @@ public sealed class DbSession(NpgsqlDataSource dataSource) : IDbSession
         ThrowIfDisposed();
 
         if (_tx is null)
+        {
+            _logger.LogError("Intento de confirmar transacción cuando no hay ninguna activa");
             throw new InvalidOperationException("No hay transacción activa que confirmar.");
+        }
 
+        _logger.LogDebug("Confirmando transacción (COMMIT)");
         await _tx.CommitAsync(ct);
         await _tx.DisposeAsync();
         _tx = null;
+        _logger.LogDebug("Transacción confirmada exitosamente");
     }
 
     /*
@@ -95,11 +114,17 @@ public sealed class DbSession(NpgsqlDataSource dataSource) : IDbSession
     {
         ThrowIfDisposed();
 
-        if (_tx is null) return;
+        if (_tx is null)
+        {
+            _logger.LogDebug("Rollback solicitado pero no hay transacción activa");
+            return;
+        }
 
+        _logger.LogWarning("Revirtiendo transacción (ROLLBACK)");
         await _tx.RollbackAsync(ct);
         await _tx.DisposeAsync();
         _tx = null;
+        _logger.LogDebug("Transacción revertida exitosamente");
     }
 
     /*
@@ -111,29 +136,41 @@ public sealed class DbSession(NpgsqlDataSource dataSource) : IDbSession
     {
         if (_conn is null) return;
 
+        _logger.LogDebug("Cerrando conexión manualmente");
+
         if (_conn.State != ConnectionState.Closed)
             _conn.Close();
 
         _conn.Dispose();
         _conn = null;
+
+        _logger.LogDebug("Conexión cerrada y liberada");
     }
 
     /* Libera de forma asíncrona la transacción (si existe) y la conexión (si existe) */
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
+
+        _logger.LogDebug("Liberando recursos de DbSession (DisposeAsync)");
+
         if (_tx is not null) await _tx.DisposeAsync();
         if (_conn is not null) await _conn.DisposeAsync();
         _tx = null;
         _conn = null;
         _disposed = true;
         GC.SuppressFinalize(this);
+
+        _logger.LogDebug("Recursos liberados exitosamente");
     }
 
     /* Libera de forma síncrona la transacción (si existe) y la conexión (si existe) */
     public void Dispose()
     {
         if (_disposed) return;
+
+        _logger.LogDebug("Liberando recursos de DbSession (Dispose)");
+
         _tx?.Dispose();
         _conn?.Dispose();
         _tx = null;

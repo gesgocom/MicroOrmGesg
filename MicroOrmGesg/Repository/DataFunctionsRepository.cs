@@ -7,40 +7,103 @@ using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
 using MicroOrmGesg.Interfaces;
+using Microsoft.Extensions.Logging;
 
 namespace MicroOrmGesg.Repository;
 
 public sealed class DataFunctionsRepository : IDataFunctions
 {
+    private readonly ILogger<DataFunctionsRepository> _logger;
+
+    public DataFunctionsRepository(ILogger<DataFunctionsRepository> logger)
+    {
+        _logger = logger;
+    }
+
     public async Task<TResult?> CallFunctionAsync<TResult>(IDbSession session, string functionName, object? args = null, string? schema = null, CancellationToken ct = default)
     {
         if (session.Connection is null)
+        {
+            _logger.LogError("Intento de llamar función {FunctionName} con sesión cerrada", functionName);
             throw new InvalidOperationException("La sesión está cerrada. Llama a OpenAsync() primero.");
+        }
 
         var (sql, parameters) = BuildFunctionCallSql(functionName, args, schema, forSetReturning: false);
+
+        _logger.LogDebug("Ejecutando función escalar {FunctionName} (schema: {Schema}): {Sql}",
+            functionName, schema ?? "default", sql);
+
         var cmd = new CommandDefinition(sql, parameters, session.Transaction, cancellationToken: ct);
-        return await session.Connection!.ExecuteScalarAsync<TResult?>(cmd);
+
+        try
+        {
+            var result = await session.Connection!.ExecuteScalarAsync<TResult?>(cmd);
+            _logger.LogDebug("Función {FunctionName} ejecutada exitosamente. Resultado: {Result}",
+                functionName, result);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error ejecutando función {FunctionName}: {Sql}", functionName, sql);
+            throw;
+        }
     }
 
     public async Task<List<TResult>> CallFunctionListAsync<TResult>(IDbSession session, string functionName, object? args = null, string? schema = null, CancellationToken ct = default)
     {
         if (session.Connection is null)
+        {
+            _logger.LogError("Intento de llamar función {FunctionName} con sesión cerrada", functionName);
             throw new InvalidOperationException("La sesión está cerrada. Llama a OpenAsync() primero.");
+        }
 
         var (sql, parameters) = BuildFunctionCallSql(functionName, args, schema, forSetReturning: true);
+
+        _logger.LogDebug("Ejecutando función que devuelve conjunto {FunctionName} (schema: {Schema}): {Sql}",
+            functionName, schema ?? "default", sql);
+
         var cmd = new CommandDefinition(sql, parameters, session.Transaction, cancellationToken: ct);
-        var rows = await session.Connection!.QueryAsync<TResult>(cmd);
-        return rows.AsList();
+
+        try
+        {
+            var rows = await session.Connection!.QueryAsync<TResult>(cmd);
+            var result = rows.AsList();
+            _logger.LogDebug("Función {FunctionName} ejecutada exitosamente. Filas devueltas: {Count}",
+                functionName, result.Count);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error ejecutando función {FunctionName}: {Sql}", functionName, sql);
+            throw;
+        }
     }
 
     public async Task CallVoidFunctionAsync(IDbSession session, string functionName, object? args = null, string? schema = null, CancellationToken ct = default)
     {
         if (session.Connection is null)
+        {
+            _logger.LogError("Intento de llamar función {FunctionName} con sesión cerrada", functionName);
             throw new InvalidOperationException("La sesión está cerrada. Llama a OpenAsync() primero.");
+        }
 
         var (sql, parameters) = BuildFunctionCallSql(functionName, args, schema, forSetReturning: false);
+
+        _logger.LogDebug("Ejecutando función void {FunctionName} (schema: {Schema}): {Sql}",
+            functionName, schema ?? "default", sql);
+
         var cmd = new CommandDefinition(sql, parameters, session.Transaction, cancellationToken: ct);
-        await session.Connection!.ExecuteAsync(cmd);
+
+        try
+        {
+            await session.Connection!.ExecuteAsync(cmd);
+            _logger.LogDebug("Función void {FunctionName} ejecutada exitosamente", functionName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error ejecutando función void {FunctionName}: {Sql}", functionName, sql);
+            throw;
+        }
     }
 
     private static (string sql, DynamicParameters parameters) BuildFunctionCallSql(string functionName, object? args, string? schema, bool forSetReturning)

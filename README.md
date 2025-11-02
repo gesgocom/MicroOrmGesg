@@ -21,6 +21,8 @@ Tabla de contenidos
 - [Paginación y conteo](#toc-paginacion)
 - [Validación de modelos](#toc-validacion)
 - [Ejecución genérica de funciones PostgreSQL](#toc-funciones)
+- [Queries directas con Dapper (IDirectQuery)](#toc-direct-query)
+- [Logging y diagnóstico](#toc-logging)
 - [Sistema de Migraciones](#toc-migraciones)
     - [Introducción y características](#toc-migraciones-intro)
     - [Configuración y registro](#toc-migraciones-config)
@@ -40,7 +42,9 @@ Tabla de contenidos
 MicroOrmGesg es un micro ORM basado en Dapper y Npgsql que facilita operaciones CRUD, paginación, filtrado y manejo de JSONB en PostgreSQL. Incluye:
 - **DbSession**: Gestión de conexiones y transacciones por unidad de trabajo
 - **Repositorio genérico tipado**: CRUD completo con paginación, filtros y soft delete
+- **Queries directas (IDirectQuery)**: Ejecuta SQL personalizado compartiendo la misma conexión/transacción
 - **Ejecución de funciones PostgreSQL**: Invocación genérica de funciones sin acoplamiento
+- **Logging integrado**: ILogger<T> en todos los componentes para diagnóstico y monitoreo
 - **Sistema de migraciones**: Migraciones idempotentes con checksums, advisory locks y detección de drift
 - **Utilidades de mapeo**: Convenciones snake_case con atributos para excepciones
 - **Soporte JSONB**: Serialización/deserialización nativa con Newtonsoft.Json
@@ -71,6 +75,9 @@ services.AddScoped(typeof(MicroOrmGesg.Interfaces.IDataMicroOrm<>), typeof(Micro
 
 // Ejecutor genérico de funciones PostgreSQL
 services.AddScoped<MicroOrmGesg.Interfaces.IDataFunctions, MicroOrmGesg.Repository.DataFunctionsRepository>();
+
+// Queries directas con Dapper (compartiendo IDbSession)
+services.AddScoped<MicroOrmGesg.Interfaces.IDirectQuery, MicroOrmGesg.Repository.DirectQuery>();
 
 // Health check de base de datos (opcional)
 services.AddScoped<MicroOrmGesg.Interfaces.IDbHealthCheck, MicroOrmGesg.Repository.DbHealthCheck>();
@@ -261,6 +268,447 @@ var lista = await _funcs.CallFunctionListAsync<ValidacionDto>(_db, "validar_toke
 await _funcs.CallVoidFunctionAsync(_db, "incrementar_intento_token", new { p_token = token }, ct: ct);
 bool ok = await _funcs.CallFunctionAsync<bool>(_db, "usar_token_cambiar_password", new { p_token = token, p_nuevo_password_hash = hash, p_ip_uso = "1.2.3.4" }, schema: null, ct) ?? false;
 int? eliminados = await _funcs.CallFunctionAsync<int>(_db, "limpiar_tokens_expirados", ct: ct);
+```
+
+<a id="toc-direct-query"></a>
+## Queries directas con Dapper (IDirectQuery)
+
+`IDirectQuery` permite ejecutar queries SQL directas usando Dapper, compartiendo la misma `IDbSession` (conexión y transacción) con el repositorio genérico. Esto te permite combinar el micro ORM con queries personalizadas según tus necesidades.
+
+### Interfaz y métodos disponibles
+
+```csharp
+public interface IDirectQuery
+{
+    // Query que devuelve múltiples elementos
+    Task<IEnumerable<T>> QueryAsync<T>(IDbSession session, string sql, object? param = null, CancellationToken ct = default);
+
+    // Query que devuelve un único elemento (excepción si 0 o más de 1)
+    Task<T> QuerySingleAsync<T>(IDbSession session, string sql, object? param = null, CancellationToken ct = default);
+
+    // Query que devuelve un único elemento o default (excepción si más de 1)
+    Task<T?> QuerySingleOrDefaultAsync<T>(IDbSession session, string sql, object? param = null, CancellationToken ct = default);
+
+    // Query que devuelve el primer elemento (excepción si 0)
+    Task<T> QueryFirstAsync<T>(IDbSession session, string sql, object? param = null, CancellationToken ct = default);
+
+    // Query que devuelve el primer elemento o default
+    Task<T?> QueryFirstOrDefaultAsync<T>(IDbSession session, string sql, object? param = null, CancellationToken ct = default);
+
+    // Comando que devuelve filas afectadas (INSERT/UPDATE/DELETE)
+    Task<int> ExecuteAsync(IDbSession session, string sql, object? param = null, CancellationToken ct = default);
+
+    // Query escalar (SELECT COUNT, MAX, etc.)
+    Task<T?> ExecuteScalarAsync<T>(IDbSession session, string sql, object? param = null, CancellationToken ct = default);
+
+    // Query con múltiples result sets
+    Task<SqlMapper.GridReader> QueryMultipleAsync(IDbSession session, string sql, object? param = null, CancellationToken ct = default);
+}
+```
+
+### Ejemplo 1: Combinar repositorio genérico con queries directas
+
+```csharp
+public sealed class ConversacionService
+{
+    private readonly IDbSession _db;
+    private readonly IDirectQuery _query;
+    private readonly IDataMicroOrm<Usuario> _usuarioRepo;
+
+    public ConversacionService(
+        IDbSession db,
+        IDirectQuery query,
+        IDataMicroOrm<Usuario> usuarioRepo)
+    {
+        _db = db;
+        _query = query;
+        _usuarioRepo = usuarioRepo;
+    }
+
+    public async Task<ConversacionDto> CrearConversacionAsync(
+        int usuarioId,
+        string titulo,
+        CancellationToken ct)
+    {
+        await _db.OpenAsync(ct);
+        await _db.BeginTransactionAsync(ct: ct);
+
+        try
+        {
+            // 1. Verificar usuario con el repositorio genérico
+            var usuario = await _usuarioRepo.GetByIdAsync(_db, usuarioId, ct);
+            if (usuario == null)
+                throw new InvalidOperationException("Usuario no encontrado");
+
+            // 2. Crear conversación con query directa
+            const string insertConv = @"
+                INSERT INTO conversacion (usuario_id, titulo, created_at)
+                VALUES (@usuarioId, @titulo, now())
+                RETURNING id, created_at;";
+
+            var conv = await _query.QuerySingleAsync<ConversacionRow>(
+                _db,
+                insertConv,
+                new { usuarioId, titulo },
+                ct);
+
+            // 3. Insertar mensaje inicial con query directa
+            const string insertMsg = @"
+                INSERT INTO mensaje (conversacion_id, role, content, created_at)
+                VALUES (@convId, 'system', @content, now());";
+
+            await _query.ExecuteAsync(
+                _db,
+                insertMsg,
+                new { convId = conv.Id, content = "Conversación iniciada" },
+                ct);
+
+            // 4. Actualizar contador del usuario con query directa
+            const string updateCount = @"
+                UPDATE usuarios
+                SET conversaciones_count = conversaciones_count + 1
+                WHERE id = @usuarioId;";
+
+            await _query.ExecuteAsync(_db, updateCount, new { usuarioId }, ct);
+
+            await _db.CommitAsync(ct);
+
+            return new ConversacionDto(conv.Id, titulo, conv.CreatedAt);
+        }
+        catch
+        {
+            await _db.RollbackAsync(ct);
+            throw;
+        }
+    }
+
+    private sealed record ConversacionRow(int Id, DateTime CreatedAt);
+}
+```
+
+### Ejemplo 2: Queries complejas con JOINs
+
+```csharp
+public async Task<List<EstadisticasUsuarioDto>> ObtenerEstadisticasAsync(CancellationToken ct)
+{
+    await _db.OpenAsync(ct);
+
+    const string sql = @"
+        SELECT
+            u.id,
+            u.username,
+            COUNT(DISTINCT c.id) as total_conversaciones,
+            COUNT(m.id) as total_mensajes,
+            MAX(m.created_at) as ultimo_mensaje
+        FROM usuarios u
+        LEFT JOIN conversacion c ON c.usuario_id = u.id
+        LEFT JOIN mensaje m ON m.conversacion_id = c.id
+        WHERE u.eliminado = false
+        GROUP BY u.id, u.username
+        ORDER BY total_mensajes DESC
+        LIMIT 100;";
+
+    return (await _query.QueryAsync<EstadisticasUsuarioDto>(_db, sql, ct: ct)).ToList();
+}
+```
+
+### Ejemplo 3: Query con parámetros y QueryMultipleAsync
+
+```csharp
+public async Task<DashboardDto> ObtenerDashboardAsync(int usuarioId, CancellationToken ct)
+{
+    await _db.OpenAsync(ct);
+
+    // Múltiples result sets en una sola llamada
+    const string sql = @"
+        -- Result set 1: datos del usuario
+        SELECT id, username, email, created_at
+        FROM usuarios
+        WHERE id = @usuarioId;
+
+        -- Result set 2: conversaciones recientes
+        SELECT id, titulo, created_at
+        FROM conversacion
+        WHERE usuario_id = @usuarioId
+        ORDER BY created_at DESC
+        LIMIT 5;
+
+        -- Result set 3: estadísticas
+        SELECT
+            COUNT(DISTINCT c.id) as total_conversaciones,
+            COUNT(m.id) as total_mensajes
+        FROM conversacion c
+        LEFT JOIN mensaje m ON m.conversacion_id = c.id
+        WHERE c.usuario_id = @usuarioId;";
+
+    await using var multi = await _query.QueryMultipleAsync(_db, sql, new { usuarioId }, ct);
+
+    var usuario = await multi.ReadSingleAsync<UsuarioDto>();
+    var conversaciones = (await multi.ReadAsync<ConversacionDto>()).ToList();
+    var stats = await multi.ReadSingleAsync<StatsDto>();
+
+    return new DashboardDto(usuario, conversaciones, stats);
+}
+```
+
+### Ejemplo 4: ExecuteScalarAsync para agregaciones
+
+```csharp
+public async Task<int> ContarMensajesPendientesAsync(int usuarioId, CancellationToken ct)
+{
+    await _db.OpenAsync(ct);
+
+    const string sql = @"
+        SELECT COUNT(*)
+        FROM mensaje m
+        INNER JOIN conversacion c ON c.id = m.conversacion_id
+        WHERE c.usuario_id = @usuarioId
+          AND m.leido = false;";
+
+    return await _query.ExecuteScalarAsync<int>(_db, sql, new { usuarioId }, ct) ?? 0;
+}
+```
+
+### Ejemplo 5: Operaciones complejas con JSON y arrays
+
+```csharp
+public async Task<List<MensajeDto>> BuscarMensajesAsync(
+    int conversacionId,
+    string[] tags,
+    CancellationToken ct)
+{
+    await _db.OpenAsync(ct);
+
+    // Búsqueda con operadores JSONB y arrays de PostgreSQL
+    const string sql = @"
+        SELECT
+            m.id,
+            m.role,
+            m.content_parts,
+            m.token_estimate,
+            m.created_at
+        FROM mensaje m
+        WHERE m.conversacion_id = @conversacionId
+          AND m.tags && @tags  -- operador de intersección de arrays
+        ORDER BY m.created_at DESC
+        LIMIT 50;";
+
+    return (await _query.QueryAsync<MensajeDto>(
+        _db,
+        sql,
+        new { conversacionId, tags },
+        ct)).ToList();
+}
+```
+
+### Ventajas de IDirectQuery
+
+1. **Compartir conexión y transacción**: Usa la misma `IDbSession` que el repositorio genérico
+2. **CancellationToken integrado**: Todas las operaciones propagan el token de cancelación
+3. **Flexibilidad total**: Escribe cualquier SQL que necesites (JOINs, CTEs, funciones de ventana, etc.)
+4. **Tipo seguro**: Mapeo automático de Dapper a tus DTOs
+5. **Testeable**: Puedes mockear `IDirectQuery` en tus tests
+6. **Consistente**: Sigue el mismo patrón que los demás servicios del micro ORM
+
+### Cuándo usar IDirectQuery vs IDataMicroOrm
+
+| Usa IDataMicroOrm cuando... | Usa IDirectQuery cuando... |
+|------------------------------|----------------------------|
+| CRUD simple de una entidad | Queries con múltiples JOINs |
+| Paginación estándar | CTEs o window functions |
+| Soft delete automático | Agregaciones complejas |
+| Filtros simples | Operaciones bulk optimizadas |
+| Convenciones funcionan | SQL específico de PostgreSQL |
+
+### Notas y buenas prácticas
+
+- Siempre llama a `await _db.OpenAsync(ct)` antes de usar `IDirectQuery`
+- Usa parámetros (`@param`) para prevenir SQL injection
+- `QueryMultipleAsync` devuelve `GridReader` que debe ser disposed (usa `await using`)
+- Para operaciones de escritura en transacción, recuerda hacer `CommitAsync` / `RollbackAsync`
+- Los métodos `QuerySingle` y `QueryFirst` lanzan excepciones si no hay resultados; usa las versiones `OrDefault` si el resultado puede ser null
+
+<a id="toc-logging"></a>
+## Logging y diagnóstico
+
+MicroOrmGesg incluye logging integrado usando `ILogger<T>` de Microsoft.Extensions.Logging en todos sus componentes principales. Esto facilita el diagnóstico, depuración y monitoreo de operaciones de base de datos.
+
+### Componentes con logging
+
+Todos los componentes principales tienen logging integrado:
+
+1. **DbSession**: Conexiones, transacciones, commits, rollbacks
+2. **DirectQuery**: Todas las queries SQL ejecutadas
+3. **DataFunctionsRepository**: Invocación de funciones PostgreSQL
+4. **PgMigrator**: Ejecución completa de migraciones (ya documentado)
+
+### Niveles de log utilizados
+
+| Nivel | Cuándo se usa | Ejemplos |
+|-------|---------------|----------|
+| **Debug** | Operaciones normales detalladas | Abriendo conexión, ejecutando query, commit exitoso |
+| **Information** | Eventos importantes | (Usado principalmente en PgMigrator) |
+| **Warning** | Situaciones anómalas pero recuperables | Rollback de transacción, drift en migraciones |
+| **Error** | Errores y excepciones | Query fallida, transacción sin sesión activa |
+
+### Configuración del logging
+
+En `Program.cs` o `Startup.cs`:
+
+```csharp
+// Configuración básica (consola)
+builder.Services.AddLogging(config =>
+{
+    config.AddConsole();
+    config.SetMinimumLevel(LogLevel.Information); // Nivel mínimo global
+});
+
+// Configuración avanzada con filtros por namespace
+builder.Logging.AddFilter("MicroOrmGesg", LogLevel.Debug);          // Todo MicroOrmGesg en Debug
+builder.Logging.AddFilter("MicroOrmGesg.Repository.DbSession", LogLevel.Debug); // Solo DbSession
+builder.Logging.AddFilter("MicroOrmGesg.Migrations", LogLevel.Information);     // Migraciones en Info
+```
+
+### Ejemplo de logs generados
+
+**Con nivel Debug activado:**
+
+```
+[10:15:32 DBG] Abriendo nueva conexión a la base de datos desde el pool
+[10:15:32 DBG] Conexión abierta exitosamente
+[10:15:32 DBG] Iniciando transacción con nivel de aislamiento ReadCommitted
+[10:15:32 DBG] Transacción iniciada exitosamente
+[10:15:32 DBG] Ejecutando QueryAsync<Usuario>: SELECT * FROM usuarios WHERE id = @id
+[10:15:32 DBG] QueryAsync<Usuario> ejecutado exitosamente
+[10:15:32 DBG] Ejecutando ExecuteAsync (comando): INSERT INTO logs(mensaje) VALUES(@msg)
+[10:15:32 DBG] ExecuteAsync completado: 1 fila(s) afectada(s)
+[10:15:32 DBG] Confirmando transacción (COMMIT)
+[10:15:32 DBG] Transacción confirmada exitosamente
+[10:15:32 DBG] Liberando recursos de DbSession (DisposeAsync)
+[10:15:32 DBG] Recursos liberados exitosamente
+```
+
+**En caso de error:**
+
+```
+[10:16:45 ERR] Error ejecutando QueryAsync<Producto>: SELECT * FROM productos WHERE categoria_id = @id
+System.InvalidOperationException: Sequence contains no elements
+   at Npgsql.NpgsqlCommand.ExecuteReader(...)
+   at Dapper.SqlMapper.QueryAsync[T]...
+```
+
+**Con rollback:**
+
+```
+[10:17:20 DBG] Iniciando transacción con nivel de aislamiento ReadCommitted
+[10:17:20 DBG] Transacción iniciada exitosamente
+[10:17:21 ERR] Error ejecutando ExecuteAsync: INSERT INTO usuarios(email) VALUES(@email)
+[10:17:21 WRN] Revirtiendo transacción (ROLLBACK)
+[10:17:21 DBG] Transacción revertida exitosamente
+```
+
+### Logs de queries directas
+
+`IDirectQuery` registra cada query ejecutada con su SQL y tipo de resultado:
+
+```csharp
+await _query.QueryAsync<ConversacionDto>(_db, "SELECT * FROM conversaciones WHERE usuario_id = @id", new { id = 1 }, ct);
+```
+
+**Log generado:**
+```
+[10:18:30 DBG] Ejecutando QueryAsync<ConversacionDto>: SELECT * FROM conversaciones WHERE usuario_id = @id
+[10:18:30 DBG] QueryAsync<ConversacionDto> ejecutado exitosamente
+```
+
+### Logs de funciones PostgreSQL
+
+`IDataFunctions` registra cada invocación de función con esquema y SQL generado:
+
+```csharp
+var token = await _funcs.CallFunctionAsync<string>(_db, "generar_token", new { p_usuario_id = 1 }, schema: "auth", ct);
+```
+
+**Log generado:**
+```
+[10:19:15 DBG] Ejecutando función escalar generar_token (schema: auth): select auth.generar_token(@p_usuario_id)
+[10:19:15 DBG] Función generar_token ejecutada exitosamente. Resultado: abc123token
+```
+
+### Buenas prácticas para logging
+
+1. **Producción: Usa nivel Information o Warning**
+   - Debug genera mucho volumen (cada query, conexión, etc.)
+   - Solo activa Debug en desarrollo o para diagnóstico específico
+
+2. **Filtrar por namespace para diagnóstico selectivo**
+   ```csharp
+   // Solo logs de migraciones en Debug, resto en Information
+   builder.Logging.AddFilter("MicroOrmGesg.Migrations", LogLevel.Debug);
+   builder.Logging.AddFilter("MicroOrmGesg", LogLevel.Information);
+   ```
+
+3. **Integrar con tu sistema de logging**
+   - Serilog: `builder.Host.UseSerilog()`
+   - Application Insights, ELK, etc.
+   - Los logs estructurados de MicroOrmGesg son compatibles
+
+4. **No registres información sensible**
+   - Los logs incluyen SQL pero NO los valores de los parámetros
+   - Esto previene filtración de contraseñas, tokens, etc.
+   - Ejemplo seguro: `SELECT * FROM usuarios WHERE email = @email` (sin mostrar el valor real)
+
+5. **Monitorear logs de Error en producción**
+   - Configura alertas para logs de nivel Error
+   - Especialmente útil para detectar:
+     - Queries fallidas
+     - Problemas de conexión
+     - Violaciones de constraints
+     - Deadlocks o timeouts
+
+### Configuración ejemplo completa
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Configurar logging
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+
+if (builder.Environment.IsDevelopment())
+{
+    // Desarrollo: Debug completo de MicroOrmGesg
+    builder.Logging.AddFilter("MicroOrmGesg", LogLevel.Debug);
+    builder.Logging.SetMinimumLevel(LogLevel.Debug);
+}
+else
+{
+    // Producción: Solo Information y superiores
+    builder.Logging.AddFilter("MicroOrmGesg", LogLevel.Information);
+    builder.Logging.AddFilter("MicroOrmGesg.Migrations", LogLevel.Information); // Migraciones siempre visible
+    builder.Logging.SetMinimumLevel(LogLevel.Information);
+
+    // Integrar con tu sistema de logging
+    // builder.Host.UseSerilog(...);
+}
+
+// Registrar servicios de MicroOrmGesg (logging se inyecta automáticamente)
+builder.Services.AddSingleton(/* NpgsqlDataSource */);
+builder.Services.AddScoped<IDbSession, DbSession>();
+builder.Services.AddScoped<IDirectQuery, DirectQuery>();
+builder.Services.AddScoped<IDataFunctions, DataFunctionsRepository>();
+```
+
+### Desactivar logging de MicroOrmGesg
+
+Si prefieres no tener logs de MicroOrmGesg:
+
+```csharp
+// Opción 1: Desactivar completamente
+builder.Logging.AddFilter("MicroOrmGesg", LogLevel.None);
+
+// Opción 2: Solo errores críticos
+builder.Logging.AddFilter("MicroOrmGesg", LogLevel.Error);
 ```
 
 <a id="toc-migraciones"></a>
@@ -913,13 +1361,15 @@ Ver `examples/schema.sql` y `examples/MigrationUsageExample.cs` para ejemplos co
 - TypeHandlers de Newtonsoft para JObject/JArray/JToken.
 - Atributos de mapeo correctos ([Table], [Column], [Key], [Ignore], [Jsonb]).
 - Propagación de CancellationToken en todos los métodos asíncronos.
-- Repositorios y ejecutor de funciones registrados en DI.
+- Repositorios, ejecutor de funciones y IDirectQuery registrados en DI.
 - Sistema de migraciones configurado (opcional) con advisory lock key único.
 - Script SQL de migraciones incluido en el proyecto con CopyToOutputDirectory.
 - Migraciones ejecutadas al inicio de la aplicación (antes de procesar requests).
 
 <a id="toc-historial"></a>
 ## Historial de Cambios (resumen)
+- **v1.0.3**: Logging integrado con ILogger<T> en DbSession, DirectQuery y DataFunctionsRepository.
+- **v1.0.2**: IDirectQuery para queries directas con Dapper compartiendo IDbSession.
 - **v1.0.1**: Sistema de migraciones completo con checksums SHA-256, advisory locks, detección de drift y journal table.
 - CancellationToken en API pública (cooperación con ASP.NET Core).
 - JSONB explícito en escritura (NpgsqlDbType.Jsonb) manteniendo lectura con TypeHandlers.

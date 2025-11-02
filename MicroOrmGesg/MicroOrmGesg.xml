@@ -52,6 +52,57 @@
             <param name="ct">Token de cancelación.</param>
             <returns>Tupla (Ok, Message) con el resultado de la comprobación.</returns>
         </member>
+        <member name="T:MicroOrmGesg.Interfaces.IDirectQuery">
+            <summary>
+            Interfaz para ejecutar queries directas de Dapper usando IDbSession.
+            Permite combinar llamadas SQL directas con el uso del repositorio genérico,
+            compartiendo la misma conexión y transacción.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Interfaces.IDirectQuery.QueryAsync``1(MicroOrmGesg.Interfaces.IDbSession,System.String,System.Object,System.Threading.CancellationToken)">
+            <summary>
+            Ejecuta una query y devuelve una secuencia de elementos del tipo especificado.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Interfaces.IDirectQuery.QuerySingleAsync``1(MicroOrmGesg.Interfaces.IDbSession,System.String,System.Object,System.Threading.CancellationToken)">
+            <summary>
+            Ejecuta una query y devuelve un único elemento.
+            Lanza excepción si no hay resultados o hay más de uno.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Interfaces.IDirectQuery.QuerySingleOrDefaultAsync``1(MicroOrmGesg.Interfaces.IDbSession,System.String,System.Object,System.Threading.CancellationToken)">
+            <summary>
+            Ejecuta una query y devuelve un único elemento o default(T).
+            Lanza excepción si hay más de un resultado.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Interfaces.IDirectQuery.QueryFirstAsync``1(MicroOrmGesg.Interfaces.IDbSession,System.String,System.Object,System.Threading.CancellationToken)">
+            <summary>
+            Ejecuta una query y devuelve el primer elemento.
+            Lanza excepción si no hay resultados.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Interfaces.IDirectQuery.QueryFirstOrDefaultAsync``1(MicroOrmGesg.Interfaces.IDbSession,System.String,System.Object,System.Threading.CancellationToken)">
+            <summary>
+            Ejecuta una query y devuelve el primer elemento o default(T).
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Interfaces.IDirectQuery.ExecuteAsync(MicroOrmGesg.Interfaces.IDbSession,System.String,System.Object,System.Threading.CancellationToken)">
+            <summary>
+            Ejecuta un comando (INSERT, UPDATE, DELETE) y devuelve el número de filas afectadas.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Interfaces.IDirectQuery.ExecuteScalarAsync``1(MicroOrmGesg.Interfaces.IDbSession,System.String,System.Object,System.Threading.CancellationToken)">
+            <summary>
+            Ejecuta una query y devuelve el primer valor de la primera fila como escalar.
+            </summary>
+        </member>
+        <member name="M:MicroOrmGesg.Interfaces.IDirectQuery.QueryMultipleAsync(MicroOrmGesg.Interfaces.IDbSession,System.String,System.Object,System.Threading.CancellationToken)">
+            <summary>
+            Ejecuta una query con múltiples result sets y devuelve un GridReader de Dapper.
+            Útil para procedimientos almacenados o queries con múltiples SELECT.
+            </summary>
+        </member>
         <member name="T:MicroOrmGesg.Migrations.Extensions.ServiceCollectionExtensions">
             <summary>
             Métodos de extensión para registrar el sistema de migraciones en el contenedor de DI.
@@ -351,6 +402,12 @@
         <member name="M:MicroOrmGesg.Repository.DbHealthCheck.#ctor(Npgsql.NpgsqlDataSource)">
             <summary>
             Implementación de comprobación de salud de la base de datos.
+            </summary>
+        </member>
+        <member name="T:MicroOrmGesg.Repository.DirectQuery">
+            <summary>
+            Implementación de IDirectQuery que permite ejecutar queries directas de Dapper
+            usando IDbSession, compartiendo conexión y transacción con el repositorio genérico.
             </summary>
         </member>
         <member name="M:MicroOrmGesg.Utils.ModelValidator.Validate(System.Object)">
