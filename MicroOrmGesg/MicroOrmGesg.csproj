@@ -8,7 +8,7 @@
 
         <!-- NúGet metadata -->
         <PackageId>Gesgocom.MicroOrmGesg</PackageId>
-        <Version>1.0.1</Version>
+        <Version>1.0.2</Version>
         <Authors>Jorge Jerez Sabater</Authors>
         <Company>Gesgocom</Company>
         <Description>MicroOrmGesg es un micro ORM basado en Dapper y Npgsql que facilita operaciones CRUD, paginación, filtrado y manejo de JSONB en PostgreSQL. Incluye DbSession para gestionar conexiones/transacciones, un repositorio genérico tipado, utilidades de mapeo y ejecución genérica de funciones PostgreSQL.</Description>
